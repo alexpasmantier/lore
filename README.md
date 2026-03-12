@@ -1,10 +1,10 @@
 # engram
 
-Brain-inspired persistent memory for AI agents. A background daemon continuously ingests conversations, distills them into a semantic knowledge graph, and exposes that graph to agents via [MCP](https://modelcontextprotocol.io) tools.
+Persistent memory for AI agents. Two background daemons work together: an **ingestion** daemon that digests conversations and stores distilled knowledge into a semantic graph, and a **consolidation** daemon that walks the graph to create new links, prune stale nodes, and correct inconsistencies. The resulting knowledge graph is exposed to agents via [MCP](https://modelcontextprotocol.io) tools.
 
 ## How it works
 
-Engram organizes knowledge hierarchically, inspired by cortical layers:
+Engram organizes knowledge as a hierarchy of increasing specificity:
 
 | Depth | Role | Example |
 |-------|------|---------|
@@ -52,7 +52,7 @@ Agents query this hierarchy at different zoom levels — start broad, drill deep
 
 - **engram-db** — Core graph database. SQLite backend with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`).
 - **engram-mcp** — MCP server over stdio. Exposes 5 tools for querying and storing knowledge.
-- **engram-daemon** — Background process that ingests `~/.claude/projects/` conversation logs, extracts knowledge via Claude API, and periodically consolidates the graph.
+- **engram-daemon** — Background process that ingests `~/.claude/projects/` conversation logs, extracts knowledge via Claude API, and periodically consolidates the graph (merging near-duplicate fragments, strengthening frequently-referenced edges, and pruning stale nodes).
 
 Plus **engram-plugin** — a Claude Code plugin with `/recall` and `/remember` commands.
 

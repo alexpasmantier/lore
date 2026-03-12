@@ -2,7 +2,7 @@
 name = "engram-db"
 version = "0.1.0"
 edition = "2021"
-description = "Brain-inspired graph database for AI agent memory"
+description = "Persistent memory database for AI agents"
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

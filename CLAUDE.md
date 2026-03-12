@@ -11,7 +11,7 @@
 - Format: `cargo fmt --all`
 
 ## Architecture
-- **engram-db**: Core library. Graph database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
+- **engram-db**: Core library. Persistent memory database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
 - **engram-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
 - **engram-daemon**: Background process. Ingests conversations from `~/.claude/projects/`, extracts knowledge via Claude API, consolidates memory. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set.
 - **engram-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.

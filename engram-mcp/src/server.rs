@@ -317,7 +317,7 @@ impl MemoryServer {
 impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Engram: Brain-inspired persistent memory for AI agents. \
+            "Engram: Persistent memory for AI agents. \
                  Query knowledge at different zoom levels (0=overview, deeper=more detail). \
                  Start with list_topics or query_memory at depth 0, then drill deeper.",
         )
