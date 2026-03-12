@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "engram-db",
+    "engram-mcp",
+    "engram-daemon",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

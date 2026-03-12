@@ -1,0 +1,7 @@
+{
+  "name": "engram",
+  "description": "Brain-inspired persistent long-term memory for AI agents. Gives Claude persistent memory across conversations via a hierarchical knowledge graph.",
+  "author": {
+    "name": "Alex"
+  }
+}
