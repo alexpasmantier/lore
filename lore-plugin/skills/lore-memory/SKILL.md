@@ -32,10 +32,10 @@ Memory is dynamic — it behaves more like biological memory than a static datab
 ## Available Tools
 
 ### `query_memory`
-Search for knowledge about a topic at a specific depth. **Start at depth 0 or 1**, then drill deeper.
+Search for knowledge about a topic at a specific depth. **Start at depth 0 or 1**, then drill deeper. Use `limit` to control how many results you get back (default 10) — use fewer for focused lookups, more for broad exploration.
 
 ### `explore_memory`
-Get a full tree view of a knowledge area — shows the hierarchical structure.
+Get a full tree view of a knowledge area — shows the hierarchical structure. `limit` controls how many topic trees are returned (default 3).
 
 ### `traverse_memory`
 Navigate from a specific fragment: get its children (drill deeper), parent (zoom out), or associations (lateral connections).
@@ -44,7 +44,7 @@ Navigate from a specific fragment: get its children (drill deeper), parent (zoom
 Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level.
 
 ### `list_topics`
-See all top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first).
+See all top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Use `limit` to cap how many topics are returned.
 
 ## When to Use Memory
 

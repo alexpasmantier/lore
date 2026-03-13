@@ -29,6 +29,8 @@
 - **Importance weighting**: Fragments are scored high/medium/low at ingestion. Importance controls decay rate (high=slow, low=fast) and relevance floor.
 - **Blended query ranking**: `score = 0.7 * semantic_similarity + 0.3 * relevance_score`. Stale fragments rank lower.
 - **Forgetting**: Fragments below relevance threshold (0.05) are invisible to queries. During consolidation, truly forgotten fragments (relevance < 0.02, age > 60d, never accessed) are pruned.
+- **Topic merging**: Topics above `merge_threshold` (default 0.85) are merged during consolidation. The survivor is the more-accessed topic; the victim's children are reparented.
+- **Contradiction resolution**: Sibling pairs are batch-checked (up to 10 per API call) for contradictions. The older fragment is superseded.
 - **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
 - **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
 
@@ -43,6 +45,8 @@
 - Subagent JSONL files (`subagents/` dirs) are skipped during ingestion — mostly tool call noise.
 - Fragment columns include `importance` (f32), `relevance_score` (f32), `decay_rate` (f32), `last_reinforced` (i64). Schema auto-migrates via `migrate_v2()`.
 - Consolidation Phase 0 recomputes all relevance scores (sleep cycle). Phase 6 prunes forgotten fragments.
+- Extraction prompt includes existing topic content (200 char preview) and children summaries to reduce duplicate topic creation.
+- MCP tools `query_memory`, `explore_memory`, and `list_topics` accept a `limit` parameter to control result count.
 
 ## Key Dependencies
 - `rmcp` 1.2 — MCP server SDK. Uses `#[tool_router]` + `#[tool_handler]` macro pattern. Needs `schemars` 1.x (not 0.8).

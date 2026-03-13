@@ -63,10 +63,10 @@ Runs periodically (default: every 2 hours) and walks the entire graph:
 | Phase | Name | What it does |
 |-------|------|-------------|
 | 0 | Relevance recomputation | Recomputes all relevance scores based on time decay |
-| 1 | Topic merging | Merges near-duplicate topics (similarity > 0.9) |
+| 1 | Topic merging | Merges near-duplicate topics (configurable threshold, default 0.85) |
 | 2 | Associative linking | Creates cross-topic edges between related concepts |
 | 3 | Re-summarization | Regenerates topic overviews when children have changed |
-| 4 | Contradiction resolution | Detects and supersedes contradictory sibling fragments |
+| 4 | Contradiction resolution | Batch-checks sibling pairs for contradictions, supersedes the older one |
 | 5 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
 | 6 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
 
@@ -89,11 +89,11 @@ claude mcp add --scope user memory -- lore-mcp
 
 | Tool | Description |
 |------|-------------|
-| `query_memory` | Search at a given depth. Returns results ranked by semantic + relevance score. |
-| `explore_memory` | Subtree view of a knowledge area |
-| `traverse_memory` | Navigate children, parent, or associations of a fragment |
-| `store_memory` | Explicitly store a piece of knowledge |
-| `list_topics` | List all top-level topics, sorted by relevance |
+| `query_memory` | Search at a given depth. `limit` controls result count (default 10). |
+| `explore_memory` | Subtree view of a knowledge area. `limit` controls how many trees (default 3). |
+| `traverse_memory` | Navigate children, parent, or associations of a fragment. |
+| `store_memory` | Explicitly store a piece of knowledge. |
+| `list_topics` | List top-level topics, sorted by relevance. Optional `limit`. |
 
 ### Daemon
 
@@ -119,6 +119,7 @@ claude_model = "claude-sonnet-4-20250514"
 [consolidation]
 interval_secs = 7200
 similarity_threshold = 0.8
+merge_threshold = 0.85
 min_relevance_prune = 0.02
 
 [database]
