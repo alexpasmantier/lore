@@ -68,6 +68,11 @@ struct Fragment {
     source_session: Option<String>, // Which conversation produced this
     superseded_by: Option<FragmentId>, // If newer knowledge replaces this
     metadata: HashMap<String, String>,
+    // Brain-inspired fields (v2)
+    importance: f32,          // [0.0, 1.0] salience (high=0.9, medium=0.5, low=0.2)
+    relevance_score: f32,     // Pre-computed composite score (Ebbinghaus curve)
+    decay_rate: f32,          // Per-day exponential decay constant (derived from importance)
+    last_reinforced: i64,     // Unix timestamp of last reinforcement (reset on access)
 }
 ```
 
@@ -113,7 +118,12 @@ CREATE TABLE fragments (
     access_count INTEGER DEFAULT 0,
     source_session TEXT,
     superseded_by TEXT REFERENCES fragments(id),
-    metadata TEXT               -- JSON
+    metadata TEXT,              -- JSON
+    -- V2: Brain-inspired columns (added via ALTER TABLE migration)
+    importance REAL DEFAULT 0.5,
+    relevance_score REAL DEFAULT 1.0,
+    decay_rate REAL DEFAULT 0.035,
+    last_reinforced INTEGER DEFAULT 0
 );
 
 CREATE TABLE edges (
@@ -133,6 +143,7 @@ CREATE TABLE watermarks (
 
 CREATE INDEX idx_fragments_depth ON fragments(depth);
 CREATE INDEX idx_fragments_superseded ON fragments(superseded_by) WHERE superseded_by IS NOT NULL;
+CREATE INDEX idx_fragments_relevance ON fragments(relevance_score) WHERE superseded_by IS NULL;
 CREATE INDEX idx_edges_source ON edges(source);
 CREATE INDEX idx_edges_target ON edges(target);
 CREATE INDEX idx_edges_kind ON edges(kind);
@@ -329,32 +340,40 @@ Long-running daemon with two concurrent subsystems.
 
 ### Subsystem B: Consolidation
 
-Runs on a configurable interval (default: every 2 hours). Four phases:
+Runs on a configurable interval (default: every 2 hours). Seven phases (like a sleep cycle):
 
-**Phase 1 — Similarity Detection:**
-- Load all L0 topic fragments
-- Compute pairwise embedding cosine similarity
-- Identify pairs with similarity > 0.8 (threshold configurable)
+**Phase 0 — Relevance Recomputation (Sleep Cycle):**
+- Recompute relevance scores for ALL fragments based on the Ebbinghaus forgetting curve
+- Formula: `R = importance * strength * exp(-decay_rate * days_since_reinforcement) + importance * 0.3`
+- Strength grows logarithmically with access count (spacing effect)
 
-**Phase 2 — Link Creation:**
-- For each similar topic pair, load their L1 children
-- Compute cross-branch similarity between L1 nodes
-- Create `Associative` edges between related concepts across topics (if similarity > 0.7)
-- Recursively check L2+ nodes within linked concepts
+**Phase 1 — Similarity Detection + Topic Merging:**
+- Load all L0 topic fragments, compute pairwise embedding cosine similarity
+- Pairs with similarity > 0.9: merge (reparent victim's children to survivor, supersede victim)
+- Pairs with similarity > 0.8: candidates for associative linking
 
-**Phase 3 — Contradiction Resolution:**
-- For fragments connected by `Associative` edges within the same topic:
-  - If content contradicts (detected via Claude API with a focused prompt)
-  - Mark the older fragment with `superseded_by` pointing to the newer one
-  - Reduce edge weights to the superseded fragment
+**Phase 2 — Associative Link Creation:**
+- For each similar topic pair, compare their L1 children
+- Create `Associative` edges between cross-topic children with similarity > 0.7
 
-**Phase 4 — Pruning:**
-- Remove `Associative` edges with weight < 0.3
-- Archive (soft-delete) fragments that are:
-  - Superseded AND older than 30 days AND access_count < 3
-- Merge highly similar L0 topics (similarity > 0.95):
-  - Reparent children under the more recently accessed topic
-  - Create redirect edge from old to new
+**Phase 3 — Re-summarization (requires API key):**
+- Topics with new children (created after last access) get re-summarized by Claude
+- Produces a fresh overview paragraph that integrates new knowledge
+
+**Phase 4 — Contradiction Resolution (requires API key):**
+- For sibling fragments within the same parent, ask Claude if they contradict
+- If yes, supersede the older fragment with the newer one
+
+**Phase 5 — Edge Pruning:**
+- Decay all `Associative` edge weights by 5% per consolidation cycle
+- Prune edges that have decayed below 0.15 threshold
+- `Hierarchical` edges are never decayed or pruned
+
+**Phase 6 — Fragment Pruning (True Forgetting):**
+- Tier 1: relevance < 0.02, never accessed, age > 60 days → delete
+- Tier 2: relevance < 0.01, age > 90 days → delete regardless of access
+- Before deletion, reparent children to the fragment's parent
+- Depth-0 topics are never pruned (they just rank low)
 
 ### Daemon Process Management
 
@@ -471,14 +490,17 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 ├── CLAUDE.md                   # Dev instructions
 ├── engram-db/
 │   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs              # Public API, re-exports
-│       ├── fragment.rs         # Fragment, FragmentId types
-│       ├── edge.rs             # Edge, EdgeKind types
-│       ├── graph.rs            # In-memory graph operations
-│       ├── query.rs            # Query engine (search, traverse, explore)
-│       ├── embedding.rs        # Embedding generation + cosine similarity
-│       └── storage.rs          # SQLite backend (create, read, write, migrate)
+│   ├── src/
+│   │   ├── lib.rs              # Public API, re-exports
+│   │   ├── fragment.rs         # Fragment, FragmentId types
+│   │   ├── edge.rs             # Edge, EdgeKind types
+│   │   ├── relevance.rs        # Brain-inspired relevance scoring (Ebbinghaus curve)
+│   │   ├── query.rs            # Query engine (search, traverse, explore, reconsolidation)
+│   │   ├── embedding.rs        # Embedding generation + cosine similarity
+│   │   └── storage.rs          # SQLite backend (create, read, write, migrate, v2 columns)
+│   └── tests/
+│       ├── brain_behavior.rs   # 30 behavioral tests (decay, reinforcement, importance, etc.)
+│       └── live_db_test.rs     # 6 tests against real ~/.engram/memory.db (ignored by default)
 ├── engram-mcp/
 │   ├── Cargo.toml
 │   └── src/
@@ -486,15 +508,17 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 │       └── server.rs           # MemoryServer impl with #[tool] methods
 ├── engram-daemon/
 │   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs             # Entry point, CLI (start/stop/status)
-│       ├── config.rs           # Config file parsing
-│       ├── watcher.rs          # File polling + watermark tracking
-│       ├── parser.rs           # Conversation JSONL parsing
-│       ├── ingestion.rs        # Knowledge extraction pipeline (calls Claude API)
-│       ├── consolidation.rs    # Memory consolidation (4 phases)
-│       ├── claude_client.rs    # Claude API HTTP client
-│       └── embedding.rs        # Embedding generation (re-uses engram-db)
+│   ├── src/
+│   │   ├── lib.rs              # Public module exports (for integration tests)
+│   │   ├── main.rs             # Entry point, CLI (start/stop/status)
+│   │   ├── config.rs           # Config file parsing
+│   │   ├── watcher.rs          # File polling + watermark tracking
+│   │   ├── parser.rs           # Conversation JSONL parsing
+│   │   ├── ingestion.rs        # Knowledge extraction + importance classification
+│   │   ├── consolidation.rs    # Memory consolidation (7 phases)
+│   │   └── claude_client.rs    # Claude API HTTP client + CLI fallback
+│   └── tests/
+│       └── scenarios.rs        # 27 integration tests with fixture conversations
 └── engram-plugin/
     ├── .claude-plugin/
     │   └── plugin.json
@@ -512,14 +536,14 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 ```toml
 # engram-db
 rusqlite = { version = "0.32", features = ["bundled"] }
-fastembed = "4"              # Local embeddings (all-MiniLM-L6-v2)
-uuid = { version = "1", features = ["v4"] }
+fastembed = "5"              # Local embeddings (all-MiniLM-L6-v2, 384-dim)
+uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # engram-mcp
 engram-db = { path = "../engram-db" }
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
+rmcp = { version = "1.2", features = ["server", "transport-io"] }  # Needs schemars 1.x
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 
@@ -532,55 +556,41 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
 ```
 
 ## Build Order
 
-### Phase 1: Foundation — engram-db
-1. Types: `Fragment`, `Edge`, `EdgeKind`, `FragmentId`, `ScoredFragment`, `Tree`
-2. SQLite storage: create tables, migrations, CRUD for fragments and edges
-3. Embedding: integrate fastembed-rs, cosine similarity function
-4. Query engine: `query`, `children`, `parent`, `subtree`, `explore`, `list_topics`, `search_semantic`
-5. Tests: unit tests for each query type with a test fixture database
+All phases are complete. Current state:
 
-### Phase 2: Agent Interface — engram-mcp
-1. `MemoryServer` struct holding an `EngramDb` handle
-2. Implement `rmcp::ServerHandler` trait with `#[tool]` methods for all 5 tools
-3. Main: set up stdio transport via `rmcp::transport::io::stdio()`, serve
-4. Test: spin up server in-process, verify tool call round-trips
+### Phase 1: Foundation — engram-db ✓
+- Types, SQLite storage with WAL mode, fastembed embeddings, query engine
+- Brain-inspired relevance scoring (Ebbinghaus curve, importance weighting, decay rates)
+- Reconsolidation on recall with spreading activation
+- Schema v2 migration for brain-inspired columns
+- 24 unit tests + 30 behavioral tests + 6 live DB tests
 
-### Phase 3: Background Processing — engram-daemon
-1. Config parsing (`~/.engram/config.toml`)
-2. Conversation JSONL parser (handle all message types, extract meaningful text)
-3. File watcher with watermark tracking
-4. Claude API client (messages endpoint, structured output)
-5. Ingestion pipeline: poll → parse → extract → embed → insert
-6. Consolidation: 4 phases (similarity, linking, contradiction, pruning)
-7. CLI: start/stop/status with PID file management
-8. Integration test: create a mock conversation JSONL, run ingestion, verify database
+### Phase 2: Agent Interface — engram-mcp ✓
+- `MemoryServer` with `rmcp` 1.2 SDK, 5 MCP tools
+- Responses include relevance scores, topics sorted by relevance
+- 5 unit tests
 
-### Phase 4: Plugin — engram-plugin
-1. Write plugin.json, .mcp.json
-2. Write SKILL.md (the agent awareness prompt)
-3. Write /remember and /recall commands
-4. Install plugin: symlink into `~/.claude/plugins/` or register via marketplace
+### Phase 3: Background Processing — engram-daemon ✓
+- Config, JSONL parser, file watcher, Claude API client with CLI fallback
+- Ingestion with importance classification (high/medium/low)
+- Temporal edges between sequential siblings
+- 7-phase consolidation (decay, merge, link, resummarize, contradict, prune edges, prune fragments)
+- 11 unit tests + 27 integration scenario tests with fixture conversations
 
-## Verification Plan
+### Phase 4: Plugin — engram-plugin ✓
+- plugin.json, .mcp.json, SKILL.md, /recall and /remember commands
 
-1. **Unit tests (engram-db):** Test each query type, edge cases, embedding similarity
-2. **MCP protocol test:** Send JSON-RPC to engram-mcp via piped stdin, verify responses
-3. **End-to-end ingestion test:**
-   - Create a synthetic conversation JSONL file
-   - Run engram-daemon ingestion (with a mock Claude API or real API)
-   - Query the database via engram-mcp and verify knowledge was extracted
-4. **Plugin test:**
-   - Install the plugin
-   - Start a Claude Code session
-   - Run `/mcp` to verify engram tools appear
-   - Run `/recall rust async` to test querying
-   - Run `/remember "the project uses tokio multi-threaded runtime"` to test storing
-5. **Consolidation test:**
-   - Seed database with overlapping topics
-   - Run consolidation
-   - Verify: associative links created, contradictions resolved, stale fragments pruned
+## Test Coverage (97 tests)
+
+- **engram-db unit tests (24):** Fragment/edge CRUD, embedding roundtrip, query types, watermarks
+- **Brain behavior tests (30):** Decay, reinforcement, spreading activation, importance, forgetting, blended ranking, edge lifecycle, temporal edges, schema migration, reconsolidation, supersession, graph integrity, end-to-end lifecycles
+- **Integration scenarios (27):** Fixture conversation parsing, multi-session accumulation, memory lifecycle over months, reconsolidation cascade, topic augmentation, forgetting/pruning, edge decay, full pipeline E2E
+- **Live DB tests (6, ignored):** Schema verification, topic sorting, decay recomputation, reinforcement, spreading activation against real `~/.engram/memory.db`
+- **MCP server tests (5):** Query, store, traverse, list topics
+- **Daemon unit tests (11):** JSONL parsing, extraction prompt building, zoom-tree response parsing

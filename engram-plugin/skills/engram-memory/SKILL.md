@@ -19,7 +19,15 @@ Knowledge is stored as **zoom-trees** where each node is a self-contained summar
 - **Depth 0 — Overviews**: Rich, self-contained paragraph summaries of a knowledge area
 - **Depth 1+ — Drill-downs**: Progressively more detailed elaborations on the parent
 
-Each node is readable on its own — children add detail, not just categorize. Fragments are also connected by **associative links** (cross-topic relationships).
+Each node is readable on its own — children add detail, not just categorize. Fragments are also connected by **associative links** (cross-topic relationships) and **temporal links** (sequential reading order).
+
+## How Memory Behaves
+
+Memory is **brain-inspired** — it behaves more like biological memory than a static database:
+- **Memories decay over time**: Relevance fades following the Ebbinghaus forgetting curve. Old, unaccessed memories rank lower and eventually become invisible.
+- **Accessing memories reinforces them**: When you query and retrieve a memory, it gets reinforced — its decay timer resets and connected memories get a small activation boost.
+- **Importance matters**: High-importance memories (architectural decisions, user corrections) decay much slower and maintain a minimum relevance floor. Low-importance memories fade quickly if not accessed.
+- **Results are ranked by relevance**: Query results blend semantic similarity (70%) with temporal relevance (30%), so fresh or frequently-accessed memories rank higher.
 
 ## Available Tools
 
@@ -36,7 +44,7 @@ Navigate from a specific fragment: get its children (drill deeper), parent (zoom
 Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level.
 
 ### `list_topics`
-See all top-level knowledge domains with summaries and child counts.
+See all top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first).
 
 ## When to Use Memory
 

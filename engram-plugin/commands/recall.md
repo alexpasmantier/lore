@@ -10,10 +10,11 @@ The user wants to recall knowledge from long-term memory about: $ARGUMENTS
 
 Follow these steps:
 
-1. If no specific topic is given, use `list_topics` to show what's in memory
-2. Otherwise, use `query_memory` with the topic at depth 1 (concepts level) to find relevant knowledge
+1. If no specific topic is given, use `list_topics` to show what's in memory (sorted by relevance — most active first)
+2. Otherwise, use `query_memory` with the topic at depth 0 (overview level) to find relevant knowledge
 3. If matches are found, use `explore_memory` to show the full knowledge tree for the best match
 4. Present the results in a clear, organized way — show the hierarchy from topic → concepts → facts
-5. If the user specified `--depth N`, query at that depth instead of 1
+5. If the user specified `--depth N`, query at that depth instead of 0
+6. Note: querying memories reinforces them — frequently recalled knowledge stays fresh
 
 Format the output as a readable summary, not raw JSON. Group related knowledge together.
