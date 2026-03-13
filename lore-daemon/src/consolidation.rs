@@ -1,13 +1,8 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use lore_db::fragment::now_unix;
 use lore_db::{cosine_similarity, EdgeKind, LoreDb, Fragment, FragmentId};
 
 use crate::claude_client::ClaudeClient;
 use crate::config::ConsolidationConfig;
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Run all consolidation phases.
 pub async fn run_consolidation(
@@ -32,8 +27,8 @@ pub async fn run_consolidation(
     let similar_pairs = phase1_similarity_detection(db, config.similarity_threshold);
     tracing::info!("Phase 1: Found {} similar topic pairs", similar_pairs.len());
 
-    // Merge highly similar topics (similarity > 0.9)
-    stats.topics_merged = phase1_topic_merging(db, &similar_pairs)?;
+    // Merge highly similar topics
+    stats.topics_merged = phase1_topic_merging(db, &similar_pairs, config.merge_threshold)?;
     tracing::info!("Phase 1: Merged {} topic pairs", stats.topics_merged);
 
     // Phase 2: Create associative links between related concepts
@@ -116,16 +111,17 @@ fn phase1_similarity_detection(
     pairs
 }
 
-/// Merge topic pairs with very high similarity (>0.9).
+/// Merge topic pairs above the merge threshold.
 /// Picks the survivor (higher access_count), reparents victim's children, supersedes victim.
 fn phase1_topic_merging(
     db: &LoreDb,
     similar_pairs: &[(FragmentId, FragmentId, f32)],
+    merge_threshold: f32,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut merged = 0;
 
     for &(id_a, id_b, sim) in similar_pairs {
-        if sim <= 0.9 {
+        if sim <= merge_threshold {
             continue;
         }
 
@@ -254,77 +250,174 @@ async fn phase3_resummarization(
 }
 
 /// Phase 4: Detect contradictions between sibling fragments within the same parent.
+/// Collects all candidate pairs first, then batch-checks them to minimize API calls.
 async fn phase4_contradiction_resolution(
     db: &LoreDb,
     client: &ClaudeClient,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let topics = db.list_topics();
-    let mut resolved = 0;
 
+    // Collect all candidate pairs across the entire tree
+    let mut candidates = Vec::new();
     for topic in &topics {
-        // Check children at each level for contradictions
-        resolved += check_siblings_for_contradictions(db, client, topic.id).await?;
+        collect_contradiction_candidates(db, topic.id, &mut candidates);
+    }
+
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+
+    tracing::info!(
+        "Checking {} candidate pairs for contradictions",
+        candidates.len()
+    );
+
+    // Process in batches
+    let mut resolved = 0;
+    for batch in candidates.chunks(CONTRADICTION_BATCH_SIZE) {
+        resolved += check_contradiction_batch(db, client, batch).await?;
     }
 
     Ok(resolved)
 }
 
-/// Recursively check sibling fragments for contradictions.
-fn check_siblings_for_contradictions<'a>(
-    db: &'a LoreDb,
-    client: &'a ClaudeClient,
+/// A candidate contradiction pair to check.
+struct ContradictionCandidate {
+    id_a: FragmentId,
+    id_b: FragmentId,
+    content_a: String,
+    content_b: String,
+    created_a: i64,
+    created_b: i64,
+}
+
+/// Collect all candidate contradiction pairs from the tree, then batch-check them.
+fn collect_contradiction_candidates(
+    db: &LoreDb,
     parent_id: FragmentId,
-) -> BoxFuture<'a, Result<usize, Box<dyn std::error::Error>>> {
-    Box::pin(async move {
-        let children = db.children(parent_id);
-        let mut resolved = 0;
+    candidates: &mut Vec<ContradictionCandidate>,
+) {
+    let children = db.children(parent_id);
 
-        // Check pairs of siblings
-        for i in 0..children.len() {
-            for j in (i + 1)..children.len() {
-                if !children[i].embedding.is_empty() && !children[j].embedding.is_empty() {
-                    let sim = cosine_similarity(&children[i].embedding, &children[j].embedding);
-                    if sim < 0.5 {
-                        continue;
-                    }
+    for i in 0..children.len() {
+        for j in (i + 1)..children.len() {
+            if !children[i].embedding.is_empty() && !children[j].embedding.is_empty() {
+                let sim = cosine_similarity(&children[i].embedding, &children[j].embedding);
+                if sim < 0.5 {
+                    continue;
                 }
+            }
 
-                let prompt = format!(
-                    "Do these two statements contradict each other? Answer only 'yes' or 'no'.\n\n\
-                     Statement A: {}\n\nStatement B: {}",
-                    children[i].content, children[j].content
-                );
+            candidates.push(ContradictionCandidate {
+                id_a: children[i].id,
+                id_b: children[j].id,
+                content_a: children[i].content.clone(),
+                content_b: children[j].content.clone(),
+                created_a: children[i].created_at,
+                created_b: children[j].created_at,
+            });
+        }
+    }
 
-                match client.complete(&prompt).await {
-                    Ok(response) => {
-                        if response.trim().to_lowercase().starts_with("yes") {
-                            let (old, new) = if children[i].created_at < children[j].created_at {
-                                (&children[i], &children[j])
-                            } else {
-                                (&children[j], &children[i])
-                            };
+    // Recurse into children
+    for child in &children {
+        collect_contradiction_candidates(db, child.id, candidates);
+    }
+}
 
-                            if let Err(e) = db.supersede(old.id, new.id) {
-                                tracing::warn!("Failed to supersede: {}", e);
-                            } else {
-                                resolved += 1;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Claude API error during contradiction check: {}", e);
+/// Maximum pairs per batched contradiction-check API call.
+const CONTRADICTION_BATCH_SIZE: usize = 10;
+
+/// Check a batch of candidate pairs for contradictions in a single API call.
+async fn check_contradiction_batch(
+    db: &LoreDb,
+    client: &ClaudeClient,
+    batch: &[ContradictionCandidate],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    if batch.is_empty() {
+        return Ok(0);
+    }
+
+    // Single pair — use simple prompt
+    if batch.len() == 1 {
+        let c = &batch[0];
+        let prompt = format!(
+            "Do these two statements contradict each other? Answer only 'yes' or 'no'.\n\n\
+             Statement A: {}\n\nStatement B: {}",
+            c.content_a, c.content_b
+        );
+
+        return match client.complete(&prompt).await {
+            Ok(response) => {
+                if response.trim().to_lowercase().starts_with("yes") {
+                    resolve_contradiction(db, c)
+                } else {
+                    Ok(0)
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Claude API error during contradiction check: {}", e);
+                Ok(0)
+            }
+        };
+    }
+
+    // Multi-pair batch — ask Claude to identify which pairs contradict
+    let mut prompt = String::from(
+        "For each numbered pair below, determine if the two statements contradict each other. \
+         Respond with ONLY a JSON array of the pair numbers that contradict. \
+         Example: [1, 3] means pairs 1 and 3 contradict. [] means none contradict.\n\n",
+    );
+
+    for (i, c) in batch.iter().enumerate() {
+        prompt.push_str(&format!(
+            "Pair {}:\n  A: {}\n  B: {}\n\n",
+            i + 1,
+            c.content_a,
+            c.content_b
+        ));
+    }
+
+    prompt.push_str("Respond with ONLY the JSON array, no explanation.");
+
+    match client.complete(&prompt).await {
+        Ok(response) => {
+            let response = response.trim();
+            // Parse the JSON array of contradicting pair numbers
+            let indices: Vec<usize> = serde_json::from_str(response).unwrap_or_default();
+            let mut resolved = 0;
+
+            for idx in indices {
+                if idx >= 1 && idx <= batch.len() {
+                    match resolve_contradiction(db, &batch[idx - 1]) {
+                        Ok(n) => resolved += n,
+                        Err(e) => tracing::warn!("Failed to resolve contradiction: {}", e),
                     }
                 }
             }
-        }
 
-        // Recurse into children
-        for child in &children {
-            resolved += check_siblings_for_contradictions(db, client, child.id).await?;
+            Ok(resolved)
         }
+        Err(e) => {
+            tracing::warn!("Claude API error during batch contradiction check: {}", e);
+            Ok(0)
+        }
+    }
+}
 
-        Ok(resolved)
-    })
+/// Resolve a contradiction by superseding the older fragment with the newer one.
+fn resolve_contradiction(
+    db: &LoreDb,
+    candidate: &ContradictionCandidate,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let (old_id, new_id) = if candidate.created_a < candidate.created_b {
+        (candidate.id_a, candidate.id_b)
+    } else {
+        (candidate.id_b, candidate.id_a)
+    };
+
+    db.supersede(old_id, new_id)?;
+    Ok(1)
 }
 
 /// Phase 5: Decay edge weights and prune weak edges.

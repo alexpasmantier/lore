@@ -30,6 +30,9 @@ pub struct ConsolidationConfig {
     pub interval_secs: u64,
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: f32,
+    /// Similarity above which topics are merged (must be >= similarity_threshold).
+    #[serde(default = "default_merge_threshold")]
+    pub merge_threshold: f32,
     #[serde(default = "default_prune_age_days")]
     pub prune_age_days: u32,
     /// Minimum relevance score below which fragments may be pruned.
@@ -64,6 +67,9 @@ fn default_consolidation_interval() -> u64 {
 fn default_similarity_threshold() -> f32 {
     0.8
 }
+fn default_merge_threshold() -> f32 {
+    0.85
+}
 fn default_prune_age_days() -> u32 {
     30
 }
@@ -93,6 +99,7 @@ impl Default for ConsolidationConfig {
         Self {
             interval_secs: default_consolidation_interval(),
             similarity_threshold: default_similarity_threshold(),
+            merge_threshold: default_merge_threshold(),
             prune_age_days: default_prune_age_days(),
             min_relevance_prune: default_min_relevance_prune(),
         }

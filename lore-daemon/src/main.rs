@@ -166,10 +166,22 @@ async fn run_ingestion_pass(
     tracing::debug!("Found {} conversation files", files.len());
 
     // Phase 1: Read all files and collect work items (no Claude calls yet)
-    let existing_topics: Vec<(String, String)> = db
+    let existing_topics: Vec<ingestion::ExistingTopicContext> = db
         .list_topics()
         .into_iter()
-        .map(|t| (t.id.to_string(), t.summary.clone()))
+        .map(|t| {
+            let children_summaries = db
+                .children(t.id)
+                .into_iter()
+                .map(|c| c.summary)
+                .collect();
+            ingestion::ExistingTopicContext {
+                id: t.id.to_string(),
+                summary: t.summary.clone(),
+                content: t.content.clone(),
+                children_summaries,
+            }
+        })
         .collect();
 
     struct WorkItem {
