@@ -117,6 +117,8 @@ lore-daemon stop           # stop background daemon
 lore-tray
 ```
 
+> **GNOME users:** The system tray requires the AppIndicator extension. On Ubuntu: `gnome-extensions enable ubuntu-appindicators@ubuntu.com`. On other GNOME distros: install and enable `gnome-shell-extension-appindicator`.
+
 The tray icon reflects the daemon's current state:
 
 | State | Appearance |
