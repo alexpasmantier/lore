@@ -90,7 +90,7 @@ fn phase1_similarity_detection(
     db: &LoreDb,
     threshold: f32,
 ) -> Vec<(FragmentId, FragmentId, f32)> {
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     let mut pairs = Vec::new();
 
     for i in 0..topics.len() {
@@ -201,7 +201,7 @@ async fn phase3_resummarization(
     db: &LoreDb,
     client: &ClaudeClient,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     let mut resummarized = 0;
 
     for topic in &topics {
@@ -255,7 +255,7 @@ async fn phase4_contradiction_resolution(
     db: &LoreDb,
     client: &ClaudeClient,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
 
     // Collect all candidate pairs across the entire tree
     let mut candidates = Vec::new();

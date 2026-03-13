@@ -41,10 +41,16 @@ Get a full tree view of a knowledge area — shows the hierarchical structure. `
 Navigate from a specific fragment: get its children (drill deeper), parent (zoom out), or associations (lateral connections).
 
 ### `store_memory`
-Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level.
+Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level. If you omit the parent ID for depth > 0, the system automatically assigns the fragment to the most semantically similar existing topic.
 
 ### `list_topics`
-See all top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Use `limit` to cap how many topics are returned.
+See top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Supports pagination (`limit`/`offset`) and keyword filtering (`query`). Returns pagination metadata (`total`, `offset`, `limit`).
+
+### `delete_memory`
+Remove a memory fragment and all its edges. Use this to clean up incorrect, outdated, or duplicate knowledge.
+
+### `update_memory`
+Update the content and summary of an existing fragment in-place. The embedding is automatically recomputed.
 
 ## When to Use Memory
 

@@ -141,8 +141,19 @@ impl LoreDb {
     }
 
     /// List all top-level topics (L0 nodes), sorted by relevance (most relevant first).
-    pub fn list_topics(&self) -> Vec<Fragment> {
+    /// Optionally filter by a keyword query (matched against summary and content).
+    pub fn list_topics(&self, filter: Option<&str>) -> Vec<Fragment> {
         let mut topics = self.storage.get_fragments_at_depth(0).unwrap_or_default();
+
+        // Apply keyword filter if provided
+        if let Some(query) = filter {
+            let query_lower = query.to_lowercase();
+            topics.retain(|t| {
+                t.summary.to_lowercase().contains(&query_lower)
+                    || t.content.to_lowercase().contains(&query_lower)
+            });
+        }
+
         topics.sort_by(|a, b| {
             b.relevance_score
                 .partial_cmp(&a.relevance_score)
@@ -237,6 +248,34 @@ impl LoreDb {
     /// Get associations for a fragment.
     pub fn associations(&self, id: FragmentId) -> Vec<Fragment> {
         self.storage.get_associations(id).unwrap_or_default()
+    }
+
+    /// Find the best parent topic (L0) for a fragment by embedding similarity.
+    /// Returns the parent FragmentId if a sufficiently similar topic exists (cosine > threshold).
+    pub fn find_best_parent(
+        &self,
+        content: &str,
+        threshold: f32,
+    ) -> Option<FragmentId> {
+        let query_embedding = self.embed_text(content)?;
+
+        let topics = self
+            .storage
+            .get_fragments_with_embeddings(Some(0))
+            .ok()?;
+
+        let mut best: Option<(FragmentId, f32)> = None;
+        for topic in &topics {
+            if topic.embedding.is_empty() || topic.superseded_by.is_some() {
+                continue;
+            }
+            let sim = cosine_similarity(&query_embedding, &topic.embedding);
+            if sim > threshold && (best.is_none() || sim > best.unwrap().1) {
+                best = Some((topic.id, sim));
+            }
+        }
+
+        best.map(|(id, _)| id)
     }
 
     // ──── Internal helpers ────
@@ -415,7 +454,7 @@ mod tests {
     #[test]
     fn test_list_topics() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
         assert_eq!(topics.len(), 1);
         assert_eq!(topics[0].summary, "Rust");
     }
@@ -423,7 +462,7 @@ mod tests {
     #[test]
     fn test_children_and_parent() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
         let topic = &topics[0];
 
         let children = db.children(topic.id);
@@ -437,7 +476,7 @@ mod tests {
     #[test]
     fn test_subtree() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
         let tree = db.subtree(topics[0].id, 3).unwrap();
 
         assert_eq!(tree.fragment.summary, "Rust");
@@ -477,7 +516,7 @@ mod tests {
     #[test]
     fn test_prune() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
         assert_eq!(topics.len(), 1);
 
         // Get the topic's children first
@@ -494,7 +533,7 @@ mod tests {
     #[test]
     fn test_update_fragment() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
         let topic_id = topics[0].id;
 
         db.update(topic_id, "Updated Rust content", "Updated Rust")
@@ -508,7 +547,7 @@ mod tests {
     #[test]
     fn test_insert_with_parent() {
         let db = make_test_db();
-        let topics = db.list_topics();
+        let topics = db.list_topics(None);
 
         let new_concept = Fragment::new(
             "Rust ownership system".to_string(),

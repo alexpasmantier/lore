@@ -48,18 +48,40 @@ pub struct StoreMemoryParams {
     pub content: String,
     /// One-line summary
     pub summary: String,
-    /// Parent fragment ID (null for new top-level topic)
+    /// Parent fragment ID. If omitted for depth > 0, auto-assigns to the most
+    /// semantically similar existing topic.
     pub parent_id: Option<String>,
-    /// Zoom level (0=overview, deeper=more detail)
+    /// Zoom level (0=topic overview, 1=concept, 2=fact, 3=detail)
     #[serde(default = "default_store_depth")]
     pub depth: u32,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListTopicsParams {
-    /// Max number of topics to return (default: all)
+    /// Max number of topics to return (default: 50)
+    #[serde(default = "default_list_limit")]
+    pub limit: usize,
+    /// Number of topics to skip (for pagination)
     #[serde(default)]
-    pub limit: Option<usize>,
+    pub offset: usize,
+    /// Optional keyword filter — only return topics whose summary or content matches
+    pub query: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DeleteMemoryParams {
+    /// The fragment ID to delete
+    pub fragment_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct UpdateMemoryParams {
+    /// The fragment ID to update
+    pub fragment_id: String,
+    /// New content (replaces existing)
+    pub content: String,
+    /// New one-line summary (replaces existing)
+    pub summary: String,
 }
 
 fn default_depth() -> u32 {
@@ -77,6 +99,9 @@ fn default_explore_limit() -> usize {
 fn default_store_depth() -> u32 {
     2
 }
+fn default_list_limit() -> usize {
+    50
+}
 
 // ──── Response types ────
 
@@ -86,8 +111,15 @@ struct FragmentResponse {
     summary: String,
     content: String,
     depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<f32>,
     relevance: f32,
+    /// Parent fragment ID (if this fragment has a parent in the hierarchy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_id: Option<String>,
+    /// Parent fragment summary (breadcrumb for context)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_summary: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -110,7 +142,8 @@ struct TopicResponse {
 }
 
 impl FragmentResponse {
-    fn from_fragment(f: &Fragment, score: Option<f32>) -> Self {
+    fn from_fragment_with_parent(f: &Fragment, score: Option<f32>, db: &LoreDb) -> Self {
+        let parent = db.parent(f.id);
         Self {
             id: f.id.to_string(),
             summary: f.summary.clone(),
@@ -118,6 +151,8 @@ impl FragmentResponse {
             depth: f.depth,
             score,
             relevance: f.relevance_score,
+            parent_id: parent.as_ref().map(|p| p.id.to_string()),
+            parent_summary: parent.as_ref().map(|p| p.summary.clone()),
         }
     }
 }
@@ -201,7 +236,9 @@ impl MemoryServer {
 
             let response: Vec<FragmentResponse> = results
                 .iter()
-                .map(|sf| FragmentResponse::from_fragment(&sf.fragment, Some(sf.score)))
+                .map(|sf| {
+                    FragmentResponse::from_fragment_with_parent(&sf.fragment, Some(sf.score), db)
+                })
                 .collect();
 
             serde_json::to_string_pretty(&response)
@@ -261,7 +298,7 @@ impl MemoryServer {
 
             let response: Vec<FragmentResponse> = fragments
                 .iter()
-                .map(|f| FragmentResponse::from_fragment(f, None))
+                .map(|f| FragmentResponse::from_fragment_with_parent(f, None, db))
                 .collect();
 
             serde_json::to_string_pretty(&response)
@@ -271,9 +308,11 @@ impl MemoryServer {
 
     /// Explicitly store a piece of knowledge in long-term memory. Provide the
     /// knowledge, a summary, an optional parent topic ID, and depth level.
+    /// If no parent_id is given and depth > 0, automatically assigns to the most
+    /// semantically similar existing topic.
     #[tool(name = "store_memory")]
     async fn store_memory(&self, Parameters(params): Parameters<StoreMemoryParams>) -> String {
-        let parent_id = match params.parent_id {
+        let explicit_parent = match params.parent_id {
             Some(ref pid) => match FragmentId::parse(pid) {
                 Ok(id) => Some(id),
                 Err(_) => return format!("Invalid parent ID: {}", pid),
@@ -282,15 +321,40 @@ impl MemoryServer {
         };
 
         self.with_db(|db| {
+            // Auto-classify: if depth > 0 and no explicit parent, find best matching topic
+            let parent_id = if explicit_parent.is_some() {
+                explicit_parent
+            } else if params.depth > 0 {
+                db.find_best_parent(&params.content, 0.3)
+            } else {
+                None
+            };
+
+            let auto_parented = explicit_parent.is_none() && parent_id.is_some();
+            let parent_summary = parent_id.and_then(|pid| {
+                db.parent(pid)
+                    .or_else(|| db.storage().get_fragment(pid).ok().flatten())
+                    .map(|f| f.summary.clone())
+            });
+
             let fragment = Fragment::new(params.content, params.summary.clone(), params.depth);
             match db.insert(fragment, parent_id) {
                 Ok(id) => {
-                    let response = serde_json::json!({
+                    let mut response = serde_json::json!({
                         "status": "stored",
                         "fragment_id": id.to_string(),
                         "summary": params.summary,
                         "depth": params.depth,
                     });
+                    if let Some(pid) = parent_id {
+                        response["parent_id"] = serde_json::json!(pid.to_string());
+                    }
+                    if let Some(ref ps) = parent_summary {
+                        response["parent_summary"] = serde_json::json!(ps);
+                    }
+                    if auto_parented {
+                        response["auto_parented"] = serde_json::json!(true);
+                    }
                     serde_json::to_string_pretty(&response).unwrap()
                 }
                 Err(e) => format!("Failed to store memory: {}", e),
@@ -298,22 +362,34 @@ impl MemoryServer {
         })
     }
 
-    /// List all top-level knowledge domains in memory with their summaries
-    /// and child counts.
+    /// List top-level knowledge domains in memory. Supports pagination (limit/offset)
+    /// and keyword filtering. Returns topics sorted by relevance.
     #[tool(name = "list_topics")]
     async fn list_topics(&self, Parameters(params): Parameters<ListTopicsParams>) -> String {
         self.with_db(|db| {
-            let mut topics = db.list_topics();
+            let topics = db.list_topics(params.query.as_deref());
 
             if topics.is_empty() {
-                return "No topics in memory yet.".to_string();
+                return if params.query.is_some() {
+                    format!(
+                        "No topics matching '{}' found.",
+                        params.query.as_deref().unwrap_or("")
+                    )
+                } else {
+                    "No topics in memory yet.".to_string()
+                };
             }
 
-            if let Some(limit) = params.limit {
-                topics.truncate(limit);
-            }
+            let total = topics.len();
 
-            let response: Vec<TopicResponse> = topics
+            // Apply pagination
+            let page: Vec<_> = topics
+                .into_iter()
+                .skip(params.offset)
+                .take(params.limit)
+                .collect();
+
+            let response: Vec<TopicResponse> = page
                 .iter()
                 .map(|t| {
                     let child_count = db.children(t.id).len();
@@ -327,8 +403,59 @@ impl MemoryServer {
                 })
                 .collect();
 
-            serde_json::to_string_pretty(&response)
+            // Include pagination metadata
+            let result = serde_json::json!({
+                "total": total,
+                "offset": params.offset,
+                "limit": params.limit,
+                "topics": response,
+            });
+
+            serde_json::to_string_pretty(&result)
                 .unwrap_or_else(|_| "Error serializing results".to_string())
+        })
+    }
+
+    /// Delete a memory fragment and all its edges. Use this to remove incorrect
+    /// or outdated knowledge.
+    #[tool(name = "delete_memory")]
+    async fn delete_memory(&self, Parameters(params): Parameters<DeleteMemoryParams>) -> String {
+        let id = match FragmentId::parse(&params.fragment_id) {
+            Ok(id) => id,
+            Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
+        };
+
+        self.with_db(|db| match db.prune(id) {
+            Ok(()) => {
+                let response = serde_json::json!({
+                    "status": "deleted",
+                    "fragment_id": params.fragment_id,
+                });
+                serde_json::to_string_pretty(&response).unwrap()
+            }
+            Err(e) => format!("Failed to delete memory: {}", e),
+        })
+    }
+
+    /// Update the content and summary of an existing memory fragment.
+    /// The embedding is automatically recomputed.
+    #[tool(name = "update_memory")]
+    async fn update_memory(&self, Parameters(params): Parameters<UpdateMemoryParams>) -> String {
+        let id = match FragmentId::parse(&params.fragment_id) {
+            Ok(id) => id,
+            Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
+        };
+
+        self.with_db(|db| match db.update(id, &params.content, &params.summary) {
+            Ok(()) => {
+                let response = serde_json::json!({
+                    "status": "updated",
+                    "fragment_id": params.fragment_id,
+                    "summary": params.summary,
+                });
+                serde_json::to_string_pretty(&response).unwrap()
+            }
+            Err(e) => format!("Failed to update memory: {}", e),
         })
     }
 }
@@ -399,7 +526,13 @@ mod tests {
         let server = MemoryServer::new_in_memory().unwrap();
         seed_test_db(&server);
 
-        let result = server.list_topics(Parameters(ListTopicsParams { limit: None })).await;
+        let result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 50,
+                offset: 0,
+                query: None,
+            }))
+            .await;
         assert!(result.contains("Rust"));
     }
 
@@ -441,7 +574,7 @@ mod tests {
 
         let topic_id = {
             let db = server.db.lock().unwrap();
-            let topics = db.list_topics();
+            let topics = db.list_topics(None);
             topics[0].id.to_string()
         };
 
@@ -465,5 +598,163 @@ mod tests {
             }))
             .await;
         assert!(result.contains("Invalid direction"));
+    }
+
+    #[tokio::test]
+    async fn test_list_topics_with_query_filter() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        seed_test_db(&server);
+
+        // Store a second topic
+        {
+            let db = server.db.lock().unwrap();
+            let topic2 = Fragment::new(
+                "Python programming language".to_string(),
+                "Python".to_string(),
+                0,
+            );
+            db.storage().insert_fragment(&topic2).unwrap();
+        }
+
+        // Filter by "Python" should only return Python
+        let result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 50,
+                offset: 0,
+                query: Some("Python".to_string()),
+            }))
+            .await;
+        assert!(result.contains("Python"));
+        assert!(!result.contains("\"summary\": \"Rust\""));
+
+        // Pagination metadata should be present
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_topics_pagination() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        {
+            let db = server.db.lock().unwrap();
+            for i in 0..5 {
+                let t = Fragment::new(
+                    format!("Topic {i} content"),
+                    format!("Topic {i}"),
+                    0,
+                );
+                db.storage().insert_fragment(&t).unwrap();
+            }
+        }
+
+        // Get first 2
+        let result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 2,
+                offset: 0,
+                query: None,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["total"], 5);
+        assert_eq!(parsed["topics"].as_array().unwrap().len(), 2);
+
+        // Get next 2
+        let result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 2,
+                offset: 2,
+                query: None,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["topics"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delete_memory() {
+        let server = MemoryServer::new_in_memory().unwrap();
+
+        // Store, then delete
+        let store_result = server
+            .store_memory(Parameters(StoreMemoryParams {
+                content: "Temporary fact".to_string(),
+                summary: "Temp".to_string(),
+                parent_id: None,
+                depth: 0,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&store_result).unwrap();
+        let frag_id = parsed["fragment_id"].as_str().unwrap().to_string();
+
+        let delete_result = server
+            .delete_memory(Parameters(DeleteMemoryParams {
+                fragment_id: frag_id.clone(),
+            }))
+            .await;
+        assert!(delete_result.contains("deleted"));
+
+        // Verify it's gone
+        let list_result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 50,
+                offset: 0,
+                query: None,
+            }))
+            .await;
+        assert!(!list_result.contains("Temp"));
+    }
+
+    #[tokio::test]
+    async fn test_update_memory() {
+        let server = MemoryServer::new_in_memory().unwrap();
+
+        let store_result = server
+            .store_memory(Parameters(StoreMemoryParams {
+                content: "Original content".to_string(),
+                summary: "Original".to_string(),
+                parent_id: None,
+                depth: 0,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&store_result).unwrap();
+        let frag_id = parsed["fragment_id"].as_str().unwrap().to_string();
+
+        let update_result = server
+            .update_memory(Parameters(UpdateMemoryParams {
+                fragment_id: frag_id.clone(),
+                content: "Updated content".to_string(),
+                summary: "Updated".to_string(),
+            }))
+            .await;
+        assert!(update_result.contains("updated"));
+
+        // Verify content changed
+        let list_result = server
+            .list_topics(Parameters(ListTopicsParams {
+                limit: 50,
+                offset: 0,
+                query: None,
+            }))
+            .await;
+        assert!(list_result.contains("Updated"));
+        assert!(!list_result.contains("Original"));
+    }
+
+    #[tokio::test]
+    async fn test_query_returns_parent_breadcrumb() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        seed_test_db(&server);
+
+        // Query at depth 1 — should return "Async Rust" with parent "Rust"
+        let result = server
+            .query_memory(Parameters(QueryMemoryParams {
+                topic: "async".to_string(),
+                depth: 1,
+                limit: 10,
+            }))
+            .await;
+        assert!(result.contains("parent_summary"));
+        assert!(result.contains("Rust"));
     }
 }

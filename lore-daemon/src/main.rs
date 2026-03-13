@@ -207,7 +207,7 @@ async fn run_ingestion_pass(
 
     // Phase 1: Read all files and collect work items (no Claude calls yet)
     let existing_topics: Vec<ingestion::ExistingTopicContext> = db
-        .list_topics()
+        .list_topics(None)
         .into_iter()
         .map(|t| {
             let children_summaries = db

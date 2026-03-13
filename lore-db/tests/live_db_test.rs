@@ -28,7 +28,7 @@ fn open_live_db() -> LoreDb {
 #[ignore]
 fn live_schema_has_v2_columns() {
     let db = open_live_db();
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     assert!(
         !topics.is_empty(),
         "Should have topics in the live database"
@@ -49,7 +49,7 @@ fn live_schema_has_v2_columns() {
 #[ignore]
 fn live_topics_sorted_by_relevance() {
     let db = open_live_db();
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
 
     for i in 1..topics.len() {
         assert!(
@@ -75,7 +75,7 @@ fn live_decay_recomputation() {
     assert!(count > 0, "Should have recomputed at least some fragments");
 
     // After recomputation, topics should still be sorted
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     for i in 1..topics.len() {
         assert!(
             topics[i - 1].relevance_score >= topics[i].relevance_score,
@@ -91,7 +91,7 @@ fn live_reinforcement_on_access() {
     let now = now_unix();
 
     // Pick a topic to reinforce
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     let target = &topics[topics.len() - 1]; // pick the least relevant
     let before_rel = target.relevance_score;
     let before_access = target.access_count;
@@ -137,7 +137,7 @@ fn live_spreading_activation() {
     let now = now_unix();
 
     // Find a topic with children
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     let topic_with_children = topics.iter().find(|t| !db.children(t.id).is_empty());
 
     if let Some(topic) = topic_with_children {
@@ -169,7 +169,7 @@ fn live_spreading_activation() {
 #[ignore]
 fn live_print_relevance_distribution() {
     let db = open_live_db();
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
 
     println!("\n=== Topic Relevance Distribution ===\n");
     println!(

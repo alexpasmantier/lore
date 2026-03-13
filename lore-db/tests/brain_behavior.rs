@@ -517,7 +517,7 @@ fn relevance_modulates_text_query_ordering() {
 
     db.storage().recompute_all_relevance(now).unwrap();
 
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     assert_eq!(topics.len(), 2);
     assert!(
         topics[0].relevance_score >= topics[1].relevance_score,
@@ -727,7 +727,7 @@ fn superseded_fragments_dont_appear_in_queries() {
 
     db.supersede(old.id, new.id).unwrap();
 
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     assert!(
         !topics.iter().any(|t| t.id == old.id),
         "Superseded fragment should not appear in list_topics"
@@ -956,7 +956,7 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
 
     db.storage().recompute_all_relevance(now).unwrap();
 
-    let topics = db.list_topics();
+    let topics = db.list_topics(None);
     assert_eq!(topics.len(), 4);
 
     // The recent important decision should rank first
