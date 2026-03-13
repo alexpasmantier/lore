@@ -106,7 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("lore_daemon=info".parse().unwrap());
+        .add_directive("lore_daemon=info".parse().unwrap())
+        .add_directive("lore=info".parse().unwrap());
 
     // If `start --log-file` is used, write tracing to that file instead of stderr
     let log_file_path = match &cli.command {
