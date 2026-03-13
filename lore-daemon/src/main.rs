@@ -9,7 +9,7 @@ use lore_daemon::claude_client::ClaudeClient;
 use lore_daemon::config::Config;
 use lore_daemon::status::{self, DaemonState};
 use lore_daemon::watcher::FileWatcher;
-use lore_daemon::{consolidation, ingestion, parser};
+use lore_daemon::{consolidation, ingestion};
 
 #[derive(Parser)]
 #[command(
@@ -204,6 +204,9 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
 /// Max concurrent Claude calls during ingestion.
 const INGESTION_CONCURRENCY: usize = 4;
 
+/// Max files to process per ingestion pass (avoids hour-long first runs).
+const MAX_FILES_PER_PASS: usize = 10;
+
 async fn run_ingestion_pass(
     db: &LoreDb,
     watcher: &FileWatcher,
@@ -213,31 +216,20 @@ async fn run_ingestion_pass(
     let files = watcher.find_conversation_files();
     tracing::debug!("Found {} conversation files", files.len());
 
-    // Phase 1: Read all files and collect work items (no Claude calls yet)
-    let existing_topics: Vec<ingestion::ExistingTopicContext> = db
-        .list_topics(None)
-        .into_iter()
-        .map(|t| {
-            let children_summaries = db.children(t.id).into_iter().map(|c| c.summary).collect();
-            ingestion::ExistingTopicContext {
-                id: t.id.to_string(),
-                summary: t.summary.clone(),
-                content: t.content.clone(),
-                children_summaries,
-            }
-        })
-        .collect();
-
-    struct WorkItem {
-        file_path: PathBuf,
-        session_id: Option<String>,
-        chunks: Vec<Vec<parser::ConversationTurn>>,
-        new_offset: i64,
-    }
-
-    let mut work_items = Vec::new();
+    // Process files one at a time so results are stored incrementally.
+    // This means partial progress is preserved if the daemon is stopped,
+    // and topics appear in the DB as soon as a file is processed.
+    let mut files_processed = 0;
 
     for file_path in &files {
+        if files_processed >= MAX_FILES_PER_PASS {
+            tracing::info!(
+                "Reached per-pass file limit ({}), remaining files will be processed next pass",
+                MAX_FILES_PER_PASS
+            );
+            break;
+        }
+
         let (turns, new_offset) = watcher.read_new_turns(file_path, db.storage())?;
 
         if turns.is_empty() {
@@ -257,66 +249,60 @@ async fn run_ingestion_pass(
 
         let chunks: Vec<Vec<_>> = turns.chunks(batch_size).map(|c| c.to_vec()).collect();
 
-        work_items.push(WorkItem {
-            file_path: file_path.clone(),
-            session_id,
-            chunks,
-            new_offset,
-        });
-    }
+        // Refresh existing topics for each file so newly stored topics are visible
+        let existing_topics: Vec<ingestion::ExistingTopicContext> = db
+            .list_topics(None)
+            .into_iter()
+            .map(|t| {
+                let children_summaries = db
+                    .children(t.id)
+                    .into_iter()
+                    .map(|c| c.summary)
+                    .collect();
+                ingestion::ExistingTopicContext {
+                    id: t.id.to_string(),
+                    summary: t.summary.clone(),
+                    content: t.content.clone(),
+                    children_summaries,
+                }
+            })
+            .collect();
 
-    if work_items.is_empty() {
-        return Ok(());
-    }
+        // Process chunks with bounded concurrency, storing results as they arrive
+        use futures::stream::{self, StreamExt};
 
-    // Phase 2: Fan out all Claude calls in parallel with concurrency limit
-    // Collect (work_item_index, chunk_index, result) tuples
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(INGESTION_CONCURRENCY));
-    let mut handles = Vec::new();
-
-    for (wi_idx, item) in work_items.iter().enumerate() {
-        for (chunk_idx, chunk) in item.chunks.iter().enumerate() {
-            let sem = semaphore.clone();
+        let mut stream = stream::iter(chunks.iter().enumerate().map(|(chunk_idx, chunk)| {
             let chunk = chunk.clone();
             let topics = existing_topics.clone();
-            // ClaudeClient is not Clone, so we need to call from the current task.
-            // Instead, collect futures and use buffered execution.
-            handles.push((wi_idx, chunk_idx, chunk, topics, sem));
-        }
-    }
-
-    // Build futures and run with buffered concurrency
-    use futures::stream::{self, StreamExt};
-
-    let results: Vec<_> = stream::iter(handles.into_iter().map(
-        |(wi_idx, chunk_idx, chunk, topics, sem)| async move {
-            let _permit = sem.acquire().await.unwrap();
-            let result = ingestion::extract_knowledge(client, &chunk, &topics).await;
-            (wi_idx, chunk_idx, result)
-        },
-    ))
-    .buffer_unordered(INGESTION_CONCURRENCY)
-    .collect()
-    .await;
-
-    // Phase 3: Store results sequentially and update watermarks
-    for (wi_idx, _chunk_idx, result) in &results {
-        let item = &work_items[*wi_idx];
-        match result {
-            Ok(knowledge) => {
-                match ingestion::store_knowledge(db, knowledge, item.session_id.as_deref()) {
-                    Ok(count) => tracing::info!("Stored {} fragments from batch", count),
-                    Err(e) => tracing::error!("Storage failed (continuing): {}", e),
-                }
+            async move {
+                let result = ingestion::extract_knowledge(client, &chunk, &topics).await;
+                (chunk_idx, result)
             }
-            Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
-        }
-    }
+        }))
+        .buffer_unordered(INGESTION_CONCURRENCY);
 
-    // Update watermarks for all processed files
-    for item in &work_items {
+        while let Some((_chunk_idx, result)) = stream.next().await {
+            match result {
+                Ok(knowledge) => {
+                    match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
+                        Ok(count) => tracing::info!("Stored {} fragments from batch", count),
+                        Err(e) => tracing::error!("Storage failed (continuing): {}", e),
+                    }
+                }
+                Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
+            }
+        }
+
+        // Update watermark immediately after processing this file
         db.storage()
-            .set_watermark(&item.file_path.to_string_lossy(), item.new_offset)?;
+            .set_watermark(&file_path.to_string_lossy(), new_offset)?;
+        files_processed += 1;
+        tracing::info!(
+            "Completed file {}/{} this pass: {}",
+            files_processed,
+            MAX_FILES_PER_PASS,
+            file_path.display()
+        );
     }
 
     Ok(())
