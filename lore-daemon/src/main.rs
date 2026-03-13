@@ -13,8 +13,8 @@ use lore_daemon::watcher::FileWatcher;
 
 #[derive(Parser)]
 #[command(
-    name = "lore-daemon",
-    about = "Background daemon for lore memory system"
+    name = "lore",
+    about = "Persistent memory for AI agents"
 )]
 struct Cli {
     #[command(subcommand)]

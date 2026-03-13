@@ -105,7 +105,7 @@ This installs the binaries to `~/.local/bin/` and registers a `.desktop` entry s
 
 ```sh
 cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
-cp target/release/lore-{mcp,daemon,tray} ~/.local/bin/
+cp target/release/lore target/release/lore-{mcp,tray} ~/.local/bin/
 ```
 
 ### MCP server registration
@@ -150,21 +150,22 @@ The context menu shows the current version and status, and provides controls to:
 
 Workflow: `search` → `read` → `search(parent_id=...)` → `read` → repeat until sufficient detail.
 
-### Daemon CLI
+### CLI
 
-The daemon can also be used standalone without the tray app:
+The `lore` command can be used standalone without the tray app:
 
 ```sh
-lore-daemon start          # foreground
-lore-daemon daemonize      # background
-lore-daemon ingest         # stage new conversation turns
-lore-daemon consolidate    # digest staged turns + run consolidation
-lore-daemon status         # check if running
-lore-daemon stop           # stop background daemon
-lore-daemon roots          # list root-level fragments
-lore-daemon query "text"   # semantic search
-lore-daemon explore <id>   # show subtree (supports ID prefix)
-lore-daemon staged         # show staging area
+lore start              # run daemon in foreground
+lore daemonize          # run daemon in background
+lore stop               # stop background daemon
+lore status             # check if running
+lore ingest             # stage new conversation turns
+lore consolidate        # digest staged turns + run consolidation
+lore roots              # list root-level fragments
+lore search "text"      # semantic search
+lore explore <id>       # show subtree (supports ID prefix)
+lore staged             # show staging area
+lore logs               # tail daemon log
 ```
 
 ### Configuration

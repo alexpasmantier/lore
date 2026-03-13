@@ -88,7 +88,7 @@ fn daemon_binary() -> PathBuf {
     // 1. Check next to the tray binary (for .app bundles / co-located installs)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join("lore-daemon");
+            let sibling = dir.join("lore");
             if sibling.exists() {
                 return sibling;
             }
@@ -96,13 +96,13 @@ fn daemon_binary() -> PathBuf {
     }
     // 2. Check ~/.local/bin/
     if let Some(home) = dirs::home_dir() {
-        let local = home.join(".local/bin/lore-daemon");
+        let local = home.join(".local/bin/lore");
         if local.exists() {
             return local;
         }
     }
     // 3. Fall back to PATH
-    PathBuf::from("lore-daemon")
+    PathBuf::from("lore")
 }
 
 fn start_daemon() {

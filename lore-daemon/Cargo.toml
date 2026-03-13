@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Background daemon for lore memory ingestion and consolidation"
 
+[[bin]]
+name = "lore"
+path = "src/main.rs"
+
 [dependencies]
 lore-db = { path = "../lore-db" }
 tokio = { workspace = true }

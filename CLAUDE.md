@@ -5,8 +5,9 @@
 - Test all: `cargo test` (105 tests across 3 crates)
 - Test single crate: `cargo test -p lore-db`
 - Run MCP server: `cargo run -p lore-mcp`
-- Run daemon: `cargo run -p lore-daemon -- start`
+- Run daemon: `cargo run -p lore-daemon -- start` (binary is `lore`)
 - Single ingestion pass: `cargo run -p lore-daemon -- ingest`
+- CLI query: `cargo run -p lore-daemon -- roots`
 - Check: `cargo clippy --workspace`
 - Format: `cargo fmt --all`
 
@@ -18,12 +19,12 @@
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
 
 ## Installed State
-- Binaries installed at `~/.local/bin/lore-mcp`, `~/.local/bin/lore-daemon`, and `~/.local/bin/lore-tray`
+- Binaries installed at `~/.local/bin/lore`, `~/.local/bin/lore-mcp`, and `~/.local/bin/lore-tray`
 - MCP server registered in `~/.claude/.mcp.json` (user-level, all sessions)
 - Config at `~/.lore/config.toml`
 - Database at `~/.lore/memory.db`
-- Daemon status at `~/.lore/daemon.status` (JSON, written by daemon, read by tray and `lore-daemon status`)
-- To rebuild and reinstall: `cargo build --release -p lore-mcp -p lore-daemon -p lore-tray && cp target/release/lore-{mcp,daemon,tray} ~/.local/bin/`
+- Daemon status at `~/.lore/daemon.status` (JSON, written by daemon, read by tray and `lore status`)
+- To rebuild and reinstall: `cargo build --release -p lore-mcp -p lore-daemon -p lore-tray && cp target/release/lore target/release/lore-{mcp,tray} ~/.local/bin/`
 - macOS app bundle: `just bundle-macos` → `target/Lore.app`
 - Linux desktop install: `just install-linux`
 
