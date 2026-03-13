@@ -1,3 +1,4 @@
+use lore_db::fragment::now_unix;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,7 +12,8 @@ pub enum DaemonState {
 }
 
 /// Written to `~/.lore/daemon.status` so that external tools (e.g. the tray
-/// icon) can observe what the daemon is doing without IPC.
+/// icon) and the `lore-daemon status` command can observe what the daemon is
+/// doing without IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub state: DaemonState,
@@ -28,10 +30,7 @@ pub fn write_status(state: DaemonState) {
     let status = DaemonStatus {
         state,
         pid: std::process::id(),
-        updated_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64,
+        updated_at: now_unix(),
     };
     if let Ok(json) = serde_json::to_string(&status) {
         let _ = std::fs::write(status_file(), json);

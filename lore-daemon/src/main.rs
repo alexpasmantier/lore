@@ -159,7 +159,7 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     // Handle shutdown gracefully
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-    ctrlc_handler(shutdown_tx);
+    shutdown_signal_handler(shutdown_tx);
 
     let mut ingestion_timer = tokio::time::interval(ingestion_interval);
     let mut consolidation_timer = tokio::time::interval(consolidation_interval);
@@ -398,6 +398,7 @@ fn stop_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Sent stop signal to daemon (PID: {}).", pid);
     let _ = std::fs::remove_file(&pid_path);
+    status::clear_status();
     Ok(())
 }
 
@@ -415,10 +416,19 @@ fn show_status() -> Result<(), Box<dyn std::error::Error>> {
     let running = unsafe { libc::kill(pid, 0) } == 0;
 
     if running {
-        println!("Daemon: running (PID: {})", pid);
+        let activity = match status::read_status() {
+            Some(s) if s.pid == pid as u32 => match s.state {
+                DaemonState::Idle => "idle",
+                DaemonState::Ingesting => "ingesting",
+                DaemonState::Consolidating => "consolidating",
+            },
+            _ => "unknown",
+        };
+        println!("Daemon: running (PID: {}, state: {})", pid, activity);
     } else {
         println!("Daemon: stale PID file (PID: {} not running)", pid);
         let _ = std::fs::remove_file(&pid_path);
+        status::clear_status();
     }
 
     Ok(())
@@ -448,9 +458,18 @@ fn tail_logs(lines: usize, follow: bool) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn ctrlc_handler(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+fn shutdown_signal_handler(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+
         let _ = shutdown_tx.send(true);
     });
 }

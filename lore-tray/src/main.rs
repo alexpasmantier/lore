@@ -1,7 +1,7 @@
 mod icon;
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tao::event_loop::{ControlFlow, EventLoop};
@@ -31,6 +31,7 @@ enum TrayState {
 struct StatusFile {
     state: String,
     pid: u32,
+    #[allow(dead_code)]
     updated_at: i64,
 }
 
@@ -50,19 +51,20 @@ fn poll_state() -> TrayState {
         Err(_) => return TrayState::Stopped,
     };
 
-    // Verify the process is still alive.
-    let alive = unsafe { libc::kill(status.pid as i32, 0) } == 0;
-    if !alive {
+    // Reject invalid PIDs: 0 would check our own process group via kill(2).
+    if status.pid == 0 {
         return TrayState::Stopped;
     }
 
-    // If the status file is older than 5 minutes, treat as idle (possibly stuck).
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    if now - status.updated_at > 300 {
-        return TrayState::Idle;
+    // Verify the process is still alive.
+    let pid = status.pid as i32;
+    if pid <= 0 {
+        // u32 > i32::MAX overflowed to negative — treat as invalid.
+        return TrayState::Stopped;
+    }
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    if !alive {
+        return TrayState::Stopped;
     }
 
     match status.state.as_str() {
@@ -263,10 +265,11 @@ fn main() {
 
             // Toggle menu items.
             let running = !matches!(state, TrayState::Stopped);
+            let busy = matches!(state, TrayState::Ingesting | TrayState::Consolidating);
             start_item.set_enabled(!running);
             stop_item.set_enabled(running);
-            ingest_item.set_enabled(running);
-            consolidate_item.set_enabled(running);
+            ingest_item.set_enabled(running && !busy);
+            consolidate_item.set_enabled(running && !busy);
 
             // Update tooltip.
             let tip = match state {

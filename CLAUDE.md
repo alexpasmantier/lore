@@ -13,15 +13,17 @@
 ## Architecture
 - **lore-db**: Core library. Persistent memory database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
 - **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
-- **lore-daemon**: Background process. Ingests conversations from `~/.claude/projects/`, extracts knowledge via Claude API, consolidates memory. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set.
+- **lore-daemon**: Background process. Ingests conversations from `~/.claude/projects/`, extracts knowledge via Claude API, consolidates memory. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
+- **lore-tray**: System tray icon (HAL 9000 style). Monitors `~/.lore/daemon.status` and provides start/stop/trigger controls. Requires GTK3 + libappindicator on Linux.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
 
 ## Installed State
-- Binaries installed at `~/.local/bin/lore-mcp` and `~/.local/bin/lore-daemon`
+- Binaries installed at `~/.local/bin/lore-mcp`, `~/.local/bin/lore-daemon`, and `~/.local/bin/lore-tray`
 - MCP server registered in `~/.claude/.mcp.json` (user-level, all sessions)
 - Config at `~/.lore/config.toml`
 - Database at `~/.lore/memory.db`
-- To rebuild and reinstall: `cargo build --release -p lore-mcp -p lore-daemon && cp target/release/lore-{mcp,daemon} ~/.local/bin/`
+- Daemon status at `~/.lore/daemon.status` (JSON, written by daemon, read by tray and `lore-daemon status`)
+- To rebuild and reinstall: `cargo build --release -p lore-mcp -p lore-daemon -p lore-tray && cp target/release/lore-{mcp,daemon,tray} ~/.local/bin/`
 
 ## Brain-Inspired Memory Model
 - **Relevance scoring**: Ebbinghaus forgetting curve with reinforcement. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`. Strength grows logarithmically with access count.
@@ -52,3 +54,4 @@
 - `rmcp` 1.2 — MCP server SDK. Uses `#[tool_router]` + `#[tool_handler]` macro pattern. Needs `schemars` 1.x (not 0.8).
 - `fastembed` 5.x — Local embeddings. `embed()` takes `&mut self`, so wrapped in `Mutex`.
 - `rusqlite` 0.32 — SQLite. Connection is not `Sync`, so `LoreDb` is wrapped in `Mutex` in the MCP server.
+- `tray-icon` 0.19 + `tao` 0.32 — Cross-platform system tray for `lore-tray`. Linux requires `libgtk-3-dev` and `libayatana-appindicator3-dev`.

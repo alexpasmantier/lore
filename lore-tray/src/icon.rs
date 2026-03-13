@@ -1,8 +1,8 @@
 /// HAL 9000-style icon generator.
 ///
-/// Produces a 64x64 RGBA image of a glowing red "eye" – a radial gradient
+/// Produces an RGBA image of a glowing red "eye" – a radial gradient
 /// lens inside a dark metallic ring, inspired by the HAL 9000 from
-/// *2001: A Space Odyssey*.
+/// *2001: A Space Odyssey*. Default size is 64×64 (see [`ICON_SIZE`]).
 pub const ICON_SIZE: u32 = 64;
 
 #[derive(Debug, Clone, Copy)]
@@ -11,8 +11,9 @@ pub enum IconColor {
     Orange,
 }
 
-/// Generate a 64×64 RGBA pixel buffer for the HAL 9000 eye.
+/// Generate a `size × size` RGBA pixel buffer for the HAL 9000 eye.
 ///
+/// * `size` – width and height of the square icon in pixels.
 /// * `brightness` – overall glow intensity, 0.0 (off) to 1.0 (full).
 /// * `color` – lens hue (red for normal/ingesting, orange for consolidating).
 pub fn generate(size: u32, brightness: f32, color: IconColor) -> Vec<u8> {
