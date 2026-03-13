@@ -1,6 +1,9 @@
 use crate::edge::{Edge, EdgeId, EdgeKind};
 use crate::embedding::{cosine_similarity, Embedder};
 use crate::fragment::{now_unix, Fragment, FragmentId, ScoredFragment, Tree};
+use crate::relevance::{
+    compute_relevance, ACTIVATION_SPREAD_FACTOR, MIN_RELEVANCE_THRESHOLD, SEMANTIC_WEIGHT,
+};
 use crate::storage::Storage;
 
 /// The main query engine for the engram graph database.
@@ -41,7 +44,8 @@ impl EngramDb {
     }
 
     /// Search by topic string, return fragments at specified depth.
-    /// Uses embedding similarity to find relevant branches, then returns nodes at target depth.
+    /// Uses a blended score of semantic similarity and relevance (brain-inspired ranking).
+    /// Accessing fragments reinforces them (reconsolidation on recall).
     pub fn query(&self, topic: &str, depth: u32, limit: usize) -> Vec<ScoredFragment> {
         let query_embedding = match self.embed_text(topic) {
             Some(e) => e,
@@ -54,12 +58,14 @@ impl EngramDb {
             Err(_) => return Vec::new(),
         };
 
-        // Score by cosine similarity
+        // Score by blended semantic similarity + relevance
         let mut scored: Vec<ScoredFragment> = fragments
             .into_iter()
-            .filter(|f| !f.embedding.is_empty())
+            .filter(|f| !f.embedding.is_empty() && f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .map(|f| {
-                let score = cosine_similarity(&query_embedding, &f.embedding);
+                let semantic = cosine_similarity(&query_embedding, &f.embedding);
+                let score =
+                    SEMANTIC_WEIGHT * semantic + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
                 ScoredFragment { fragment: f, score }
             })
             .collect();
@@ -72,9 +78,9 @@ impl EngramDb {
         });
         scored.truncate(limit);
 
-        // Touch accessed fragments
+        // Reinforce accessed fragments (reconsolidation on recall)
         for sf in &scored {
-            let _ = self.storage.touch_fragment(sf.fragment.id);
+            self.reinforce_on_access(sf.fragment.id);
         }
 
         scored
@@ -107,7 +113,7 @@ impl EngramDb {
             .collect()
     }
 
-    /// Pure semantic search across all fragments.
+    /// Pure semantic search across all fragments, blended with relevance.
     pub fn search_semantic(&self, embedding: &[f32], top_k: usize) -> Vec<ScoredFragment> {
         let fragments = match self.storage.get_fragments_with_embeddings(None) {
             Ok(f) => f,
@@ -116,9 +122,11 @@ impl EngramDb {
 
         let mut scored: Vec<ScoredFragment> = fragments
             .into_iter()
-            .filter(|f| !f.embedding.is_empty())
+            .filter(|f| !f.embedding.is_empty() && f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .map(|f| {
-                let score = cosine_similarity(embedding, &f.embedding);
+                let semantic = cosine_similarity(embedding, &f.embedding);
+                let score =
+                    SEMANTIC_WEIGHT * semantic + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
                 ScoredFragment { fragment: f, score }
             })
             .collect();
@@ -132,9 +140,15 @@ impl EngramDb {
         scored
     }
 
-    /// List all top-level topics (L0 nodes) with summaries.
+    /// List all top-level topics (L0 nodes), sorted by relevance (most relevant first).
     pub fn list_topics(&self) -> Vec<Fragment> {
-        self.storage.get_fragments_at_depth(0).unwrap_or_default()
+        let mut topics = self.storage.get_fragments_at_depth(0).unwrap_or_default();
+        topics.sort_by(|a, b| {
+            b.relevance_score
+                .partial_cmp(&a.relevance_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        topics
     }
 
     /// Insert a fragment, optionally generate its embedding, and connect it to parent.
@@ -227,6 +241,45 @@ impl EngramDb {
 
     // ──── Internal helpers ────
 
+    /// Reinforce a fragment on access: update relevance score and spread activation
+    /// to neighbors. This is the reconsolidation-on-recall mechanism.
+    fn reinforce_on_access(&self, id: FragmentId) {
+        let now = now_unix();
+
+        // Load the fragment to compute new relevance
+        if let Ok(Some(frag)) = self.storage.get_fragment(id) {
+            let new_access_count = frag.access_count + 1;
+            let new_relevance = compute_relevance(
+                frag.importance,
+                new_access_count,
+                frag.decay_rate,
+                now, // last_reinforced becomes now
+                now,
+            );
+            let _ = self.storage.reinforce_fragment(id, now, new_relevance);
+
+            // Spreading activation: boost immediate neighbors
+            self.spread_activation(id, now);
+        }
+    }
+
+    /// Spread a small activation boost to connected fragments.
+    /// Models the brain's associative priming: accessing one memory
+    /// slightly strengthens related memories.
+    fn spread_activation(&self, id: FragmentId, now: i64) {
+        if let Ok(edges) = self.storage.get_edges_for(id) {
+            for edge in edges {
+                let neighbor_id = if edge.source == id {
+                    edge.target
+                } else {
+                    edge.source
+                };
+                let boost = ACTIVATION_SPREAD_FACTOR * edge.weight.min(1.0);
+                let _ = self.storage.boost_relevance(neighbor_id, boost, now);
+            }
+        }
+    }
+
     /// Generate an embedding for text, returning None if no embedder is available.
     fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
         self.embedder.as_ref().and_then(|e| e.embed(text).ok())
@@ -256,12 +309,13 @@ impl EngramDb {
 
         let mut scored: Vec<ScoredFragment> = fragments
             .into_iter()
+            .filter(|f| f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .filter_map(|f| {
                 let content_lower = f.content.to_lowercase();
                 let summary_lower = f.summary.to_lowercase();
 
-                // Simple text matching score
-                let score = if content_lower.contains(&topic_lower)
+                // Simple text matching score, blended with relevance
+                let text_score = if content_lower.contains(&topic_lower)
                     || summary_lower.contains(&topic_lower)
                 {
                     0.8
@@ -279,6 +333,8 @@ impl EngramDb {
                     }
                 };
 
+                let score =
+                    SEMANTIC_WEIGHT * text_score + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
                 Some(ScoredFragment { fragment: f, score })
             })
             .collect();
@@ -289,6 +345,12 @@ impl EngramDb {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         scored.truncate(limit);
+
+        // Reinforce accessed fragments (reconsolidation on recall)
+        for sf in &scored {
+            self.reinforce_on_access(sf.fragment.id);
+        }
+
         scored
     }
 }

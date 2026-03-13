@@ -1,19 +1,13 @@
-mod claude_client;
-mod config;
-mod consolidation;
-mod ingestion;
-mod parser;
-mod watcher;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use engram_db::{EngramDb, Storage};
 
-use claude_client::ClaudeClient;
-use config::Config;
-use watcher::FileWatcher;
+use engram_daemon::claude_client::ClaudeClient;
+use engram_daemon::config::Config;
+use engram_daemon::watcher::FileWatcher;
+use engram_daemon::{consolidation, ingestion, parser};
 
 #[derive(Parser)]
 #[command(
@@ -205,10 +199,7 @@ async fn run_ingestion_pass(
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
-        let chunks: Vec<Vec<_>> = turns
-            .chunks(batch_size)
-            .map(|c| c.to_vec())
-            .collect();
+        let chunks: Vec<Vec<_>> = turns.chunks(batch_size).map(|c| c.to_vec()).collect();
 
         work_items.push(WorkItem {
             file_path: file_path.clone(),
@@ -257,11 +248,7 @@ async fn run_ingestion_pass(
         let item = &work_items[*wi_idx];
         match result {
             Ok(knowledge) => {
-                match ingestion::store_knowledge(
-                    db,
-                    knowledge,
-                    item.session_id.as_deref(),
-                ) {
+                match ingestion::store_knowledge(db, knowledge, item.session_id.as_deref()) {
                     Ok(count) => tracing::info!("Stored {} fragments from batch", count),
                     Err(e) => tracing::error!("Storage failed (continuing): {}", e),
                 }

@@ -2,7 +2,7 @@
 
 ## Build & Test
 - Build all: `cargo build`
-- Test all: `cargo test` (27 tests across 3 crates)
+- Test all: `cargo test` (97 tests across 3 crates)
 - Test single crate: `cargo test -p engram-db`
 - Run MCP server: `cargo run -p engram-mcp`
 - Run daemon: `cargo run -p engram-daemon -- start`
@@ -23,6 +23,15 @@
 - Database at `~/.engram/memory.db`
 - To rebuild and reinstall: `cargo build --release -p engram-mcp -p engram-daemon && cp target/release/engram-{mcp,daemon} ~/.local/bin/`
 
+## Brain-Inspired Memory Model
+- **Relevance scoring**: Ebbinghaus forgetting curve with reinforcement. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`. Strength grows logarithmically with access count.
+- **Reconsolidation on recall**: Accessing a fragment reinforces it (resets decay timer) and spreads activation to neighbors.
+- **Importance weighting**: Fragments are scored high/medium/low at ingestion. Importance controls decay rate (high=slow, low=fast) and relevance floor.
+- **Blended query ranking**: `score = 0.7 * semantic_similarity + 0.3 * relevance_score`. Stale fragments rank lower.
+- **Forgetting**: Fragments below relevance threshold (0.05) are invisible to queries. During consolidation, truly forgotten fragments (relevance < 0.02, age > 60d, never accessed) are pruned.
+- **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
+- **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
+
 ## Conventions
 - All timestamps are Unix seconds (i64).
 - Fragment IDs are UUIDs stored as TEXT in SQLite.
@@ -32,6 +41,8 @@
 - Database path default: `~/.engram/memory.db`, override with `ENGRAM_DB_PATH`.
 - Daemon uses `claude -p` CLI fallback when no API key is available (removes CLAUDECODE env var to avoid nesting error).
 - Subagent JSONL files (`subagents/` dirs) are skipped during ingestion — mostly tool call noise.
+- Fragment columns include `importance` (f32), `relevance_score` (f32), `decay_rate` (f32), `last_reinforced` (i64). Schema auto-migrates via `migrate_v2()`.
+- Consolidation Phase 0 recomputes all relevance scores (sleep cycle). Phase 6 prunes forgotten fragments.
 
 ## Key Dependencies
 - `rmcp` 1.2 — MCP server SDK. Uses `#[tool_router]` + `#[tool_handler]` macro pattern. Needs `schemars` 1.x (not 0.8).

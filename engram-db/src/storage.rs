@@ -54,7 +54,11 @@ impl Storage {
                 access_count INTEGER DEFAULT 0,
                 source_session TEXT,
                 superseded_by TEXT REFERENCES fragments(id),
-                metadata TEXT
+                metadata TEXT,
+                importance REAL DEFAULT 0.5,
+                relevance_score REAL DEFAULT 1.0,
+                decay_rate REAL DEFAULT 0.035,
+                last_reinforced INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS edges (
@@ -80,6 +84,41 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
             ",
         )?;
+
+        // V2 migration: add new columns to existing databases
+        // Must run before creating indexes on V2 columns
+        self.migrate_v2()?;
+
+        // Create index on V2 column (safe to run after migrate_v2)
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_fragments_relevance
+                ON fragments(relevance_score) WHERE superseded_by IS NULL;",
+        )?;
+
+        Ok(())
+    }
+
+    /// V2 migration: Add relevance/importance columns if they don't exist.
+    fn migrate_v2(&self) -> rusqlite::Result<()> {
+        // Check if the columns already exist by trying a query
+        let has_importance = self
+            .conn
+            .prepare("SELECT importance FROM fragments LIMIT 0")
+            .is_ok();
+
+        if !has_importance {
+            self.conn.execute_batch(
+                "
+                ALTER TABLE fragments ADD COLUMN importance REAL DEFAULT 0.5;
+                ALTER TABLE fragments ADD COLUMN relevance_score REAL DEFAULT 1.0;
+                ALTER TABLE fragments ADD COLUMN decay_rate REAL DEFAULT 0.035;
+                ALTER TABLE fragments ADD COLUMN last_reinforced INTEGER;
+                CREATE INDEX IF NOT EXISTS idx_fragments_relevance
+                    ON fragments(relevance_score) WHERE superseded_by IS NULL;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -97,8 +136,9 @@ impl Storage {
 
         self.conn.execute(
             "INSERT INTO fragments (id, content, summary, depth, embedding, created_at,
-             last_accessed, access_count, source_session, superseded_by, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             last_accessed, access_count, source_session, superseded_by, metadata,
+             importance, relevance_score, decay_rate, last_reinforced)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 fragment.id.as_str(),
                 fragment.content,
@@ -111,6 +151,10 @@ impl Storage {
                 fragment.source_session,
                 superseded_by,
                 metadata_json,
+                fragment.importance,
+                fragment.relevance_score,
+                fragment.decay_rate,
+                fragment.last_reinforced,
             ],
         )?;
         Ok(())
@@ -118,11 +162,10 @@ impl Storage {
 
     /// Get a fragment by ID.
     pub fn get_fragment(&self, id: FragmentId) -> rusqlite::Result<Option<Fragment>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, summary, depth, embedding, created_at, last_accessed,
-             access_count, source_session, superseded_by, metadata
-             FROM fragments WHERE id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments WHERE id = ?1",
+            FRAGMENT_COLUMNS
+        ))?;
 
         let mut rows = stmt.query_map(params![id.as_str()], row_to_fragment)?;
         match rows.next() {
@@ -134,11 +177,10 @@ impl Storage {
 
     /// Get all fragments at a specific depth.
     pub fn get_fragments_at_depth(&self, depth: u32) -> rusqlite::Result<Vec<Fragment>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, summary, depth, embedding, created_at, last_accessed,
-             access_count, source_session, superseded_by, metadata
-             FROM fragments WHERE depth = ?1 AND superseded_by IS NULL",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments WHERE depth = ?1 AND superseded_by IS NULL",
+            FRAGMENT_COLUMNS
+        ))?;
 
         let fragments = stmt
             .query_map(params![depth], row_to_fragment)?
@@ -148,12 +190,117 @@ impl Storage {
 
     /// Update last_accessed and increment access_count for a fragment.
     pub fn touch_fragment(&self, id: FragmentId) -> rusqlite::Result<()> {
+        let now = now_unix();
         self.conn.execute(
             "UPDATE fragments SET last_accessed = ?1, access_count = access_count + 1
              WHERE id = ?2",
-            params![now_unix(), id.as_str()],
+            params![now, id.as_str()],
         )?;
         Ok(())
+    }
+
+    /// Reinforce a fragment: update access tracking AND relevance score.
+    /// This is the reconsolidation-on-recall mechanism.
+    pub fn reinforce_fragment(
+        &self,
+        id: FragmentId,
+        now: i64,
+        new_relevance: f32,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE fragments SET
+                last_accessed = ?1,
+                access_count = access_count + 1,
+                last_reinforced = ?1,
+                relevance_score = ?2
+             WHERE id = ?3",
+            params![now, new_relevance, id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Boost a fragment's relevance score by a small delta (spreading activation).
+    /// Does NOT reset last_reinforced — this is a passive boost from neighbor access.
+    pub fn boost_relevance(&self, id: FragmentId, boost: f32, now: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE fragments SET
+                relevance_score = MIN(relevance_score + ?1, 1.0),
+                last_accessed = ?2
+             WHERE id = ?3 AND superseded_by IS NULL",
+            params![boost, now, id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Recompute relevance scores for all active fragments.
+    /// This is the "sleep cycle" decay pass — called during consolidation.
+    pub fn recompute_all_relevance(&self, now: i64) -> rusqlite::Result<usize> {
+        use crate::relevance::compute_relevance;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, importance, access_count, decay_rate, last_reinforced, created_at
+             FROM fragments WHERE superseded_by IS NULL",
+        )?;
+
+        let rows: Vec<(String, f32, u32, f32, Option<i64>, i64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f32>(1).unwrap_or(0.5),
+                    row.get::<_, u32>(2).unwrap_or(0),
+                    row.get::<_, f32>(3).unwrap_or(0.035),
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut update_stmt = self
+            .conn
+            .prepare("UPDATE fragments SET relevance_score = ?1 WHERE id = ?2")?;
+
+        let mut updated = 0;
+        for (id, importance, access_count, decay_rate, last_reinforced, created_at) in &rows {
+            let reinforced = last_reinforced.unwrap_or(*created_at);
+            let relevance =
+                compute_relevance(*importance, *access_count, *decay_rate, reinforced, now);
+            update_stmt.execute(params![relevance, id])?;
+            updated += 1;
+        }
+
+        Ok(updated)
+    }
+
+    /// Decay all edge weights of a given kind by a multiplicative factor.
+    pub fn decay_edge_weights(&self, kind: EdgeKind, factor: f32) -> rusqlite::Result<usize> {
+        let affected = self.conn.execute(
+            "UPDATE edges SET weight = weight * ?1 WHERE kind = ?2",
+            params![factor, kind.as_str()],
+        )?;
+        Ok(affected)
+    }
+
+    /// Get fragments with relevance below a threshold for pruning.
+    pub fn get_low_relevance_fragments(
+        &self,
+        max_relevance: f32,
+        min_age_secs: i64,
+        now: i64,
+    ) -> rusqlite::Result<Vec<Fragment>> {
+        let cutoff = now - min_age_secs;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments
+                 WHERE superseded_by IS NULL
+                 AND relevance_score < ?1
+                 AND created_at < ?2
+                 AND depth > 0",
+            FRAGMENT_COLUMNS,
+        ))?;
+
+        let fragments = stmt
+            .query_map(params![max_relevance, cutoff], row_to_fragment)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(fragments)
     }
 
     /// Update content, summary, and embedding of an existing fragment in-place.
@@ -220,14 +367,13 @@ impl Storage {
 
     /// Get all children of a fragment (via hierarchical edges where this fragment is source).
     pub fn get_children(&self, id: FragmentId) -> rusqlite::Result<Vec<Fragment>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT f.id, f.content, f.summary, f.depth, f.embedding, f.created_at,
-             f.last_accessed, f.access_count, f.source_session, f.superseded_by, f.metadata
-             FROM fragments f
-             INNER JOIN edges e ON e.target = f.id
-             WHERE e.source = ?1 AND e.kind = 'hierarchical'
-             AND f.superseded_by IS NULL",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments f
+                 INNER JOIN edges e ON e.target = f.id
+                 WHERE e.source = ?1 AND e.kind = 'hierarchical'
+                 AND f.superseded_by IS NULL",
+            FRAGMENT_COLUMNS_PREFIXED,
+        ))?;
 
         let fragments = stmt
             .query_map(params![id.as_str()], row_to_fragment)?
@@ -237,13 +383,12 @@ impl Storage {
 
     /// Get the parent of a fragment (via hierarchical edge where this fragment is target).
     pub fn get_parent(&self, id: FragmentId) -> rusqlite::Result<Option<Fragment>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT f.id, f.content, f.summary, f.depth, f.embedding, f.created_at,
-             f.last_accessed, f.access_count, f.source_session, f.superseded_by, f.metadata
-             FROM fragments f
-             INNER JOIN edges e ON e.source = f.id
-             WHERE e.target = ?1 AND e.kind = 'hierarchical'",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments f
+                 INNER JOIN edges e ON e.source = f.id
+                 WHERE e.target = ?1 AND e.kind = 'hierarchical'",
+            FRAGMENT_COLUMNS_PREFIXED,
+        ))?;
 
         let mut rows = stmt.query_map(params![id.as_str()], row_to_fragment)?;
         match rows.next() {
@@ -255,14 +400,13 @@ impl Storage {
 
     /// Get fragments connected by associative edges.
     pub fn get_associations(&self, id: FragmentId) -> rusqlite::Result<Vec<Fragment>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT f.id, f.content, f.summary, f.depth, f.embedding, f.created_at,
-             f.last_accessed, f.access_count, f.source_session, f.superseded_by, f.metadata
-             FROM fragments f
-             INNER JOIN edges e ON (e.target = f.id OR e.source = f.id)
-             WHERE (e.source = ?1 OR e.target = ?1) AND e.kind = 'associative'
-             AND f.id != ?1 AND f.superseded_by IS NULL",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM fragments f
+                 INNER JOIN edges e ON (e.target = f.id OR e.source = f.id)
+                 WHERE (e.source = ?1 OR e.target = ?1) AND e.kind = 'associative'
+                 AND f.id != ?1 AND f.superseded_by IS NULL",
+            FRAGMENT_COLUMNS_PREFIXED,
+        ))?;
 
         let fragments = stmt
             .query_map(params![id.as_str()], row_to_fragment)?
@@ -323,21 +467,16 @@ impl Storage {
         &self,
         depth: Option<u32>,
     ) -> rusqlite::Result<Vec<Fragment>> {
+        let base = format!(
+            "SELECT {} FROM fragments WHERE embedding IS NOT NULL AND superseded_by IS NULL",
+            FRAGMENT_COLUMNS,
+        );
         let sql = match depth {
-            Some(_) => {
-                "SELECT id, content, summary, depth, embedding, created_at, last_accessed,
-                 access_count, source_session, superseded_by, metadata
-                 FROM fragments WHERE embedding IS NOT NULL AND superseded_by IS NULL
-                 AND depth = ?1"
-            }
-            None => {
-                "SELECT id, content, summary, depth, embedding, created_at, last_accessed,
-                 access_count, source_session, superseded_by, metadata
-                 FROM fragments WHERE embedding IS NOT NULL AND superseded_by IS NULL"
-            }
+            Some(_) => format!("{} AND depth = ?1", base),
+            None => base,
         };
 
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let fragments = if let Some(d) = depth {
             stmt.query_map(params![d], row_to_fragment)?
@@ -388,6 +527,18 @@ impl Storage {
 
 // ──── Helper functions ────
 
+/// Column list for fragment queries (no table prefix).
+const FRAGMENT_COLUMNS: &str =
+    "id, content, summary, depth, embedding, created_at, last_accessed, \
+     access_count, source_session, superseded_by, metadata, \
+     importance, relevance_score, decay_rate, last_reinforced";
+
+/// Column list for fragment queries (with f. table prefix for JOINs).
+const FRAGMENT_COLUMNS_PREFIXED: &str =
+    "f.id, f.content, f.summary, f.depth, f.embedding, f.created_at, f.last_accessed, \
+     f.access_count, f.source_session, f.superseded_by, f.metadata, \
+     f.importance, f.relevance_score, f.decay_rate, f.last_reinforced";
+
 fn row_to_fragment(row: &rusqlite::Row) -> rusqlite::Result<Fragment> {
     let id_str: String = row.get(0)?;
     let embedding_blob: Option<Vec<u8>> = row.get(4)?;
@@ -404,6 +555,9 @@ fn row_to_fragment(row: &rusqlite::Row) -> rusqlite::Result<Fragment> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
+    let created_at: i64 = row.get(5)?;
+    let last_reinforced: Option<i64> = row.get(14).unwrap_or(None);
+
     Ok(Fragment {
         id: FragmentId::parse(&id_str).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -412,12 +566,16 @@ fn row_to_fragment(row: &rusqlite::Row) -> rusqlite::Result<Fragment> {
         summary: row.get(2)?,
         depth: row.get::<_, u32>(3)?,
         embedding,
-        created_at: row.get(5)?,
+        created_at,
         last_accessed: row.get(6)?,
         access_count: row.get::<_, u32>(7)?,
         source_session: row.get(8)?,
         superseded_by,
         metadata,
+        importance: row.get::<_, f32>(11).unwrap_or(0.5),
+        relevance_score: row.get::<_, f32>(12).unwrap_or(1.0),
+        decay_rate: row.get::<_, f32>(13).unwrap_or(0.035),
+        last_reinforced: last_reinforced.unwrap_or(created_at),
     })
 }
 
@@ -466,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_embedding_roundtrip() {
-        let original = vec![1.0f32, -0.5, 0.0, 3.14159, -2.71828];
+        let original = vec![1.0f32, -0.5, 0.0, 0.75, -1.25];
         let bytes = embedding_to_bytes(&original);
         let recovered = bytes_to_embedding(&bytes);
         assert_eq!(original, recovered);

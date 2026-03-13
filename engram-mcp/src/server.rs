@@ -77,6 +77,7 @@ struct FragmentResponse {
     content: String,
     depth: u32,
     score: Option<f32>,
+    relevance: f32,
 }
 
 #[derive(Serialize)]
@@ -85,6 +86,7 @@ struct TreeResponse {
     summary: String,
     content: String,
     depth: u32,
+    relevance: f32,
     children: Vec<TreeResponse>,
 }
 
@@ -94,6 +96,7 @@ struct TopicResponse {
     summary: String,
     content: String,
     child_count: usize,
+    relevance: f32,
 }
 
 impl FragmentResponse {
@@ -104,6 +107,7 @@ impl FragmentResponse {
             content: f.content.clone(),
             depth: f.depth,
             score,
+            relevance: f.relevance_score,
         }
     }
 }
@@ -115,6 +119,7 @@ impl TreeResponse {
             summary: tree.fragment.summary.clone(),
             content: tree.fragment.content.clone(),
             depth: tree.fragment.depth,
+            relevance: tree.fragment.relevance_score,
             children: tree.children.iter().map(TreeResponse::from_tree).collect(),
         }
     }
@@ -303,6 +308,7 @@ impl MemoryServer {
                         summary: t.summary.clone(),
                         content: t.content.clone(),
                         child_count,
+                        relevance: t.relevance_score,
                     }
                 })
                 .collect();

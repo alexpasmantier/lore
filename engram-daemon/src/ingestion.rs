@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use engram_db::{EngramDb, Fragment, FragmentId};
+use engram_db::{EdgeKind, EngramDb, Fragment, FragmentId};
 
 use crate::claude_client::ClaudeClient;
 use crate::parser::{format_conversation_batch, ConversationTurn};
@@ -20,6 +20,9 @@ pub struct ExtractedTopicEntry {
     pub summary: String,
     /// Rich, self-contained paragraph overview.
     pub content: String,
+    /// Importance level: "high", "medium", or "low".
+    #[serde(default = "default_importance")]
+    pub importance: String,
     /// Drill-down children at increasing detail.
     #[serde(default)]
     pub children: Vec<ExtractedNode>,
@@ -31,8 +34,25 @@ pub struct ExtractedTopicEntry {
 pub struct ExtractedNode {
     pub summary: String,
     pub content: String,
+    /// Importance level: "high", "medium", or "low".
+    #[serde(default = "default_importance")]
+    pub importance: String,
     #[serde(default)]
     pub children: Vec<ExtractedNode>,
+}
+
+fn default_importance() -> String {
+    "medium".to_string()
+}
+
+/// Map importance string to numeric value [0.0, 1.0].
+fn importance_value(s: &str) -> f32 {
+    match s.to_lowercase().as_str() {
+        "high" | "critical" => 0.9,
+        "medium" | "normal" => 0.5,
+        "low" | "minor" => 0.2,
+        _ => 0.5,
+    }
 }
 
 /// Maximum recursion depth for inserted trees.
@@ -55,6 +75,13 @@ fn build_extraction_prompt(existing_topics: &[(String, String)]) -> String {
 - Standard API usage or well-known patterns
 - Anything obvious from reading the code itself
 - Greetings, acknowledgments, tool call noise, file contents
+
+## Importance levels
+
+Each node must include an `importance` field:
+- **high**: Bug fixes, architectural decisions, user corrections, non-obvious gotchas, project conventions. Memories that would be costly to lose.
+- **medium**: Technical patterns, implementation details, tool configurations. Useful but recoverable from code.
+- **low**: Routine observations, standard patterns, general knowledge. Can fade if not accessed.
 
 ## Model
 
@@ -79,7 +106,7 @@ Each node is a **self-contained summary**. Children are **drill-downs** that ela
 
     prompt.push_str(
         r#"## Output format (valid JSON, no markdown, no explanation)
-{"topics": [{"existing_id": "uuid-or-null", "summary": "...", "content": "...", "children": [{"summary": "...", "content": "...", "children": [...]}]}]}
+{"topics": [{"existing_id": "uuid-or-null", "summary": "...", "content": "...", "importance": "high|medium|low", "children": [{"summary": "...", "content": "...", "importance": "high|medium|low", "children": [...]}]}]}
 
 If nothing worth remembering, return: {"topics": []}
 It is completely fine — even expected — to return empty topics for routine conversations.
@@ -120,9 +147,7 @@ pub async fn extract_knowledge(
 
     if json_str.trim().is_empty() {
         tracing::info!("Empty response from Claude — no extractable knowledge in this batch");
-        return Ok(ExtractedKnowledge {
-            topics: Vec::new(),
-        });
+        return Ok(ExtractedKnowledge { topics: Vec::new() });
     }
 
     let knowledge: ExtractedKnowledge = serde_json::from_str(json_str).map_err(|e| {
@@ -148,35 +173,42 @@ pub fn store_knowledge(
 
     for topic_entry in &knowledge.topics {
         let topic_id = match &topic_entry.existing_id {
-            Some(id_str) => {
-                match FragmentId::parse(id_str) {
-                    Ok(id) => {
-                        if db.storage().get_fragment(id).ok().flatten().is_some() {
-                            db.update(id, &topic_entry.content, &topic_entry.summary)?;
-                            id
-                        } else {
-                            tracing::warn!(
-                                "Hallucinated topic ID {}, creating new topic instead",
-                                id_str
-                            );
-                            create_new_topic(db, topic_entry, source_session)?
-                        }
-                    }
-                    Err(_) => {
+            Some(id_str) => match FragmentId::parse(id_str) {
+                Ok(id) => {
+                    if db.storage().get_fragment(id).ok().flatten().is_some() {
+                        db.update(id, &topic_entry.content, &topic_entry.summary)?;
+                        id
+                    } else {
                         tracing::warn!(
-                            "Invalid topic ID format '{}', creating new topic instead",
+                            "Hallucinated topic ID {}, creating new topic instead",
                             id_str
                         );
                         create_new_topic(db, topic_entry, source_session)?
                     }
                 }
-            }
+                Err(_) => {
+                    tracing::warn!(
+                        "Invalid topic ID format '{}', creating new topic instead",
+                        id_str
+                    );
+                    create_new_topic(db, topic_entry, source_session)?
+                }
+            },
             None => create_new_topic(db, topic_entry, source_session)?,
         };
         count += 1;
 
+        // Insert children and create temporal edges between sequential siblings
+        let mut prev_child_id: Option<FragmentId> = None;
         for child in &topic_entry.children {
-            count += insert_tree_recursive(db, child, topic_id, 1, source_session)?;
+            let (child_id, child_count) =
+                insert_tree_recursive_inner(db, child, topic_id, 1, source_session)?;
+            count += child_count;
+
+            if let Some(prev_id) = prev_child_id {
+                let _ = db.link(prev_id, child_id, EdgeKind::Temporal, 1.0);
+            }
+            prev_child_id = Some(child_id);
         }
     }
 
@@ -190,33 +222,47 @@ fn create_new_topic(
     entry: &ExtractedTopicEntry,
     source_session: Option<&str>,
 ) -> Result<FragmentId, Box<dyn std::error::Error>> {
-    let mut topic = Fragment::new(entry.content.clone(), entry.summary.clone(), 0);
+    let imp = importance_value(&entry.importance);
+    let mut topic =
+        Fragment::new_with_importance(entry.content.clone(), entry.summary.clone(), 0, imp);
     topic.source_session = source_session.map(String::from);
     db.insert(topic, None)
 }
 
 /// Recursively insert a knowledge node and its children into the tree.
-fn insert_tree_recursive(
+/// Creates temporal edges between sequential siblings.
+/// Returns (fragment_id, count) for temporal edge tracking.
+fn insert_tree_recursive_inner(
     db: &EngramDb,
     node: &ExtractedNode,
     parent_id: FragmentId,
     depth: u32,
     source_session: Option<&str>,
-) -> Result<usize, Box<dyn std::error::Error>> {
+) -> Result<(FragmentId, usize), Box<dyn std::error::Error>> {
     if depth > MAX_TREE_DEPTH {
-        return Ok(0);
+        return Ok((parent_id, 0));
     }
 
-    let mut frag = Fragment::new(node.content.clone(), node.summary.clone(), depth);
+    let imp = importance_value(&node.importance);
+    let mut frag =
+        Fragment::new_with_importance(node.content.clone(), node.summary.clone(), depth, imp);
     frag.source_session = source_session.map(String::from);
     let frag_id = db.insert(frag, Some(parent_id))?;
     let mut count = 1;
 
+    let mut prev_child_id: Option<FragmentId> = None;
     for child in &node.children {
-        count += insert_tree_recursive(db, child, frag_id, depth + 1, source_session)?;
+        let child_result =
+            insert_tree_recursive_inner(db, child, frag_id, depth + 1, source_session)?;
+        count += child_result.1;
+
+        if let Some(prev_id) = prev_child_id {
+            let _ = db.link(prev_id, child_result.0, EdgeKind::Temporal, 1.0);
+        }
+        prev_child_id = Some(child_result.0);
     }
 
-    Ok(count)
+    Ok((frag_id, count))
 }
 
 /// Generate a boundary string guaranteed not to appear in the content.

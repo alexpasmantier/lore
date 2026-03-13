@@ -54,6 +54,16 @@ pub struct Fragment {
     pub source_session: Option<String>,
     pub superseded_by: Option<FragmentId>,
     pub metadata: HashMap<String, String>,
+    /// Intrinsic salience [0.0, 1.0]. Set at ingestion time.
+    /// High = bug fixes, architectural decisions, user corrections.
+    /// Low = routine observations, standard patterns.
+    pub importance: f32,
+    /// Pre-computed composite relevance score, updated on access and during consolidation.
+    pub relevance_score: f32,
+    /// Per-day exponential decay constant (lambda). Lower = slower decay.
+    pub decay_rate: f32,
+    /// Unix timestamp of last reinforcement event (access, consolidation touch).
+    pub last_reinforced: i64,
 }
 
 impl Fragment {
@@ -71,7 +81,25 @@ impl Fragment {
             source_session: None,
             superseded_by: None,
             metadata: HashMap::new(),
+            importance: 0.5,
+            relevance_score: 1.0,
+            decay_rate: 0.035,
+            last_reinforced: now,
         }
+    }
+
+    /// Create a fragment with a specific importance level.
+    /// Automatically sets the decay rate based on importance.
+    pub fn new_with_importance(
+        content: String,
+        summary: String,
+        depth: u32,
+        importance: f32,
+    ) -> Self {
+        let mut frag = Self::new(content, summary, depth);
+        frag.importance = importance.clamp(0.0, 1.0);
+        frag.decay_rate = crate::relevance::decay_rate_for_importance(frag.importance);
+        frag
     }
 }
 

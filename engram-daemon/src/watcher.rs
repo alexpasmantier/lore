@@ -10,6 +10,12 @@ pub struct FileWatcher {
     projects_dir: PathBuf,
 }
 
+impl Default for FileWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileWatcher {
     pub fn new() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

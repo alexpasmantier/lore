@@ -32,6 +32,9 @@ pub struct ConsolidationConfig {
     pub similarity_threshold: f32,
     #[serde(default = "default_prune_age_days")]
     pub prune_age_days: u32,
+    /// Minimum relevance score below which fragments may be pruned.
+    #[serde(default = "default_min_relevance_prune")]
+    pub min_relevance_prune: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +67,9 @@ fn default_similarity_threshold() -> f32 {
 fn default_prune_age_days() -> u32 {
     30
 }
+fn default_min_relevance_prune() -> f32 {
+    0.02
+}
 fn default_db_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     format!("{}/.engram/memory.db", home)
@@ -88,6 +94,7 @@ impl Default for ConsolidationConfig {
             interval_secs: default_consolidation_interval(),
             similarity_threshold: default_similarity_threshold(),
             prune_age_days: default_prune_age_days(),
+            min_relevance_prune: default_min_relevance_prune(),
         }
     }
 }

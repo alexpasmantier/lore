@@ -1,7 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use engram_db::{cosine_similarity, EdgeKind, EngramDb, FragmentId};
+use engram_db::fragment::now_unix;
+use engram_db::{cosine_similarity, EdgeKind, EngramDb, Fragment, FragmentId};
 
 use crate::claude_client::ClaudeClient;
 use crate::config::ConsolidationConfig;
@@ -15,8 +16,17 @@ pub async fn run_consolidation(
     config: &ConsolidationConfig,
 ) -> Result<ConsolidationStats, Box<dyn std::error::Error>> {
     let mut stats = ConsolidationStats::default();
+    let now = now_unix();
 
     tracing::info!("Starting consolidation...");
+
+    // Phase 0: Decay recomputation — the "sleep cycle"
+    // Recompute relevance scores for all fragments based on time decay
+    stats.relevance_updated = db.storage().recompute_all_relevance(now)?;
+    tracing::info!(
+        "Phase 0: Recomputed relevance for {} fragments",
+        stats.relevance_updated
+    );
 
     // Phase 1: Similarity detection + topic merging
     let similar_pairs = phase1_similarity_detection(db, config.similarity_threshold);
@@ -54,9 +64,16 @@ pub async fn run_consolidation(
         tracing::info!("Phase 3-4: Skipped (no API key)");
     }
 
-    // Phase 5: Pruning
+    // Phase 5: Edge pruning (with decay)
     stats.edges_pruned = phase5_pruning(db, config)?;
     tracing::info!("Phase 5: Pruned {} weak edges", stats.edges_pruned);
+
+    // Phase 6: Fragment pruning by relevance — true forgetting
+    stats.fragments_pruned = phase6_fragment_pruning(db, config, now)?;
+    tracing::info!(
+        "Phase 6: Pruned {} low-relevance fragments",
+        stats.fragments_pruned
+    );
 
     tracing::info!("Consolidation complete: {:?}", stats);
     Ok(stats)
@@ -64,11 +81,13 @@ pub async fn run_consolidation(
 
 #[derive(Debug, Default)]
 pub struct ConsolidationStats {
+    pub relevance_updated: usize,
     pub topics_merged: usize,
     pub links_created: usize,
     pub topics_resummarized: usize,
     pub contradictions_resolved: usize,
     pub edges_pruned: usize,
+    pub fragments_pruned: usize,
 }
 
 /// Phase 1: Find pairs of L0 topics with high semantic similarity.
@@ -308,12 +327,80 @@ fn check_siblings_for_contradictions<'a>(
     })
 }
 
-/// Phase 5: Prune weak edges.
+/// Phase 5: Decay edge weights and prune weak edges.
 fn phase5_pruning(
     db: &EngramDb,
     _config: &ConsolidationConfig,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let pruned = db.storage().delete_weak_edges(EdgeKind::Associative, 0.3)?;
+    // Decay all associative edge weights by 5% per consolidation cycle
+    let _ = db.storage().decay_edge_weights(EdgeKind::Associative, 0.95);
+
+    // Prune edges that have decayed below threshold
+    let pruned = db
+        .storage()
+        .delete_weak_edges(EdgeKind::Associative, 0.15)?;
 
     Ok(pruned)
+}
+
+/// Phase 6: Prune fragments with negligible relevance — true forgetting.
+///
+/// Rules:
+/// - Never prune depth-0 topics (they just rank low instead)
+/// - Fragments with relevance < 0.02 and no accesses and age > 60 days: deleted
+/// - Fragments with relevance < 0.01 and age > 90 days: deleted regardless
+/// - Before deleting, reparent any children to the fragment's parent
+fn phase6_fragment_pruning(
+    db: &EngramDb,
+    _config: &ConsolidationConfig,
+    now: i64,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let day = 86400i64;
+    let mut pruned = 0;
+
+    // Tier 1: Very low relevance, never accessed, >60 days old
+    let stale = db
+        .storage()
+        .get_low_relevance_fragments(0.02, 60 * day, now)?;
+    for frag in &stale {
+        if frag.access_count == 0 {
+            reparent_and_prune(db, frag)?;
+            pruned += 1;
+        }
+    }
+
+    // Tier 2: Negligible relevance, >90 days old (regardless of access)
+    let very_stale = db
+        .storage()
+        .get_low_relevance_fragments(0.01, 90 * day, now)?;
+    for frag in &very_stale {
+        reparent_and_prune(db, frag)?;
+        pruned += 1;
+    }
+
+    Ok(pruned)
+}
+
+/// Reparent a fragment's children to its parent before pruning.
+fn reparent_and_prune(db: &EngramDb, frag: &Fragment) -> Result<(), Box<dyn std::error::Error>> {
+    let children = db.children(frag.id);
+    if !children.is_empty() {
+        // Find this fragment's parent to reparent children to
+        if let Some(parent) = db.parent(frag.id) {
+            for child in &children {
+                db.storage()
+                    .delete_edge_between(frag.id, child.id, EdgeKind::Hierarchical)?;
+                db.link(parent.id, child.id, EdgeKind::Hierarchical, 1.0)?;
+            }
+        }
+        // If no parent, children become orphaned — they'll get pruned later if irrelevant
+    }
+
+    db.prune(frag.id)?;
+    tracing::debug!(
+        "Pruned forgotten fragment: {} (relevance={:.3})",
+        frag.summary,
+        frag.relevance_score
+    );
+    Ok(())
 }
