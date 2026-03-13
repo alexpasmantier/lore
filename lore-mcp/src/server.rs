@@ -29,6 +29,9 @@ pub struct ExploreMemoryParams {
     /// How many levels deep to show
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
+    /// Max number of topic trees to return
+    #[serde(default = "default_explore_limit")]
+    pub limit: usize,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -53,7 +56,11 @@ pub struct StoreMemoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListTopicsParams {}
+pub struct ListTopicsParams {
+    /// Max number of topics to return (default: all)
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
 
 fn default_depth() -> u32 {
     0
@@ -63,6 +70,9 @@ fn default_limit() -> usize {
 }
 fn default_max_depth() -> u32 {
     2
+}
+fn default_explore_limit() -> usize {
+    3
 }
 fn default_store_depth() -> u32 {
     2
@@ -204,7 +214,7 @@ impl MemoryServer {
     #[tool(name = "explore_memory")]
     async fn explore_memory(&self, Parameters(params): Parameters<ExploreMemoryParams>) -> String {
         self.with_db(|db| {
-            let trees = db.explore(&params.topic, params.max_depth);
+            let trees = db.explore(&params.topic, params.max_depth, params.limit);
 
             if trees.is_empty() {
                 return format!("No knowledge trees found for topic '{}'.", params.topic);
@@ -291,12 +301,16 @@ impl MemoryServer {
     /// List all top-level knowledge domains in memory with their summaries
     /// and child counts.
     #[tool(name = "list_topics")]
-    async fn list_topics(&self, Parameters(_params): Parameters<ListTopicsParams>) -> String {
+    async fn list_topics(&self, Parameters(params): Parameters<ListTopicsParams>) -> String {
         self.with_db(|db| {
-            let topics = db.list_topics();
+            let mut topics = db.list_topics();
 
             if topics.is_empty() {
                 return "No topics in memory yet.".to_string();
+            }
+
+            if let Some(limit) = params.limit {
+                topics.truncate(limit);
             }
 
             let response: Vec<TopicResponse> = topics
@@ -385,7 +399,7 @@ mod tests {
         let server = MemoryServer::new_in_memory().unwrap();
         seed_test_db(&server);
 
-        let result = server.list_topics(Parameters(ListTopicsParams {})).await;
+        let result = server.list_topics(Parameters(ListTopicsParams { limit: None })).await;
         assert!(result.contains("Rust"));
     }
 

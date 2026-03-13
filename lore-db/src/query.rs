@@ -103,9 +103,9 @@ impl LoreDb {
     }
 
     /// Explore a topic: find the best matching L0 nodes, return their subtrees.
-    pub fn explore(&self, topic: &str, max_depth: u32) -> Vec<Tree> {
+    pub fn explore(&self, topic: &str, max_depth: u32, limit: usize) -> Vec<Tree> {
         // Find matching L0 topics
-        let top_topics = self.query(topic, 0, 3);
+        let top_topics = self.query(topic, 0, limit);
 
         top_topics
             .into_iter()
