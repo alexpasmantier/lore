@@ -1,6 +1,6 @@
 # lore
 
-Persistent memory for AI agents. A background daemon ingests conversation logs, extracts knowledge into a hierarchical graph, and periodically consolidates it (merging duplicates, resolving contradictions, pruning stale fragments). Agents query the graph through [MCP](https://modelcontextprotocol.io) tools.
+Empirical memory for AI agents. Lore builds a centralized knowledge base from experience — it watches past conversations across all sessions and projects, extracts what was learned, and organizes it into a hierarchical graph that any agent can query. Knowledge accumulated in one context is available to every future agent. Over time, a background consolidation process merges duplicates, resolves contradictions, and lets unused knowledge fade. Agents access the graph through [MCP](https://modelcontextprotocol.io) tools.
 
 ## How it works
 
@@ -27,7 +27,7 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 
 ```
 ┌─────────────────────────────────────────┐
-│            Claude Code Agent            │
+│          Any agent / session            │
 └──────────┬──────────────────────────────┘
            │ stdio (JSON-RPC)
            ▼
@@ -52,8 +52,8 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 **Crates:**
 
 - **lore-db** — Core library. SQLite storage, local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`), relevance scoring, spreading activation.
-- **lore-mcp** — MCP server over stdio (`rmcp`). Tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
-- **lore-daemon** — Background process. Polls `~/.claude/projects/` for conversation logs, extracts knowledge via Claude API, runs 7-phase consolidation.
+- **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the shared knowledge base to any connected agent.
+- **lore-daemon** — Background process. Watches conversation logs across all projects (`~/.claude/projects/`), extracts knowledge via Claude API, runs 7-phase consolidation.
 - **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
 ### Consolidation
