@@ -46,6 +46,10 @@ impl FileWatcher {
 
         for entry in entries.flatten() {
             let path = entry.path();
+            // Don't follow symlinks into potentially protected directories
+            if path.is_symlink() {
+                continue;
+            }
             if path.is_dir() {
                 Self::find_jsonl_recursive(&path, files);
             } else if path.extension().is_some_and(|ext| ext == "jsonl") {

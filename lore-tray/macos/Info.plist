@@ -23,5 +23,12 @@
     <string>11.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Lore uses the network to extract knowledge via the Claude API.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
