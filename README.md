@@ -37,9 +37,9 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 │    lore-mcp      │    │   lore-daemon    │◄───│    lore-tray     │
 │   (MCP server)   │    │   (background)   │    │  (system tray)   │
 │                  │    │                  │    │                  │
-│  5 query/store   │    │  Ingestion loop  │    │  Monitor, start  │
-│  tools for       │    │  Consolidation   │    │  stop & trigger  │
-│  agents          │    │  (7 phases)      │    │  daemon actions  │
+│  5 query/store   │    │  Staging loop    │    │  Auto-manages    │
+│  tools for       │    │  Consolidation   │    │  daemon lifecycle│
+│  agents          │    │  (8 phases)      │    │                  │
 └────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘
          │ read                  │ read/write             │ reads
          ▼                       ▼                        ▼
@@ -48,6 +48,7 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
     │        (SQLite + WAL mode)        │  │      (JSON)          │
     │                                   │  └──────────────────────┘
     │  Fragments · Edges · Watermarks   │
+    │  Staged turns                     │
     └───────────────────────────────────┘
 ```
 
@@ -55,23 +56,28 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 
 - **lore-db** — Core library. SQLite storage, local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`), relevance scoring, spreading activation.
 - **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the shared knowledge base to any connected agent.
-- **lore-daemon** — Background process. Watches conversation logs across all projects (`~/.claude/projects/`), extracts knowledge via Claude API, runs 7-phase consolidation.
-- **lore-tray** — System tray icon. Monitors the daemon and provides start/stop/trigger controls.
+- **lore-daemon** — Background process. Stages conversation turns from `~/.claude/projects/`, then digests them into knowledge during consolidation with full conversation context. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set.
+- **lore-tray** — Desktop app (menu bar / system tray). Auto-manages the daemon lifecycle.
 - **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
-### Consolidation
+### Two-phase pipeline
 
-Runs periodically (default: every 2 hours) and walks the entire graph:
+**Ingestion** runs every 30 seconds, reading new conversation turns from JSONL files and staging them in SQLite. This is instant — no API calls, no latency. Watermarks track progress per file.
+
+**Consolidation** runs periodically (default: every 2 hours) and walks the entire graph:
 
 | Phase | Name | What it does |
 |-------|------|-------------|
-| 0 | Relevance recomputation | Recomputes all relevance scores based on time decay |
-| 1 | Topic merging | Merges near-duplicate topics (configurable threshold, default 0.85) |
-| 2 | Associative linking | Creates cross-topic edges between related concepts |
-| 3 | Re-summarization | Regenerates topic overviews when children have changed |
-| 4 | Contradiction resolution | Batch-checks sibling pairs for contradictions, supersedes the older one |
-| 5 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
-| 6 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
+| 0 | Digestion | Extracts knowledge from idle staged conversations (full context) |
+| 1 | Relevance recomputation | Recomputes all relevance scores based on time decay |
+| 2 | Topic merging | Merges near-duplicate topics (configurable threshold, default 0.85) |
+| 3 | Associative linking | Creates cross-topic edges between related concepts |
+| 4 | Re-summarization | Regenerates topic overviews when children have changed |
+| 5 | Contradiction resolution | Batch-checks sibling pairs for contradictions, supersedes the older one |
+| 6 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
+| 7 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
+
+Phase 0 only digests sessions that have been idle for 5 minutes (configurable), so active conversations are left alone until they're complete. Large conversations are automatically chunked.
 
 ## Install
 
@@ -126,8 +132,8 @@ The Lore tray icon lives in your menu bar / system tray. It automatically starts
 The context menu shows the current version and status, and provides controls to:
 
 - **Start / Stop Daemon** — toggle the background daemon
-- **Trigger Ingestion** — run a single ingestion pass on demand
-- **Trigger Consolidation** — run a single consolidation pass on demand
+- **Trigger Ingestion** — stage new conversation turns immediately
+- **Trigger Consolidation** — digest staged conversations and run all consolidation phases
 - **View Logs** — opens `~/.lore/daemon.log`
 - **Quit** — stop the daemon and exit
 
@@ -148,8 +154,8 @@ The daemon can also be used standalone without the tray app:
 ```sh
 lore-daemon start          # foreground
 lore-daemon daemonize      # background
-lore-daemon ingest         # single ingestion pass
-lore-daemon consolidate    # single consolidation pass
+lore-daemon ingest         # stage new conversation turns
+lore-daemon consolidate    # digest staged turns + run consolidation
 lore-daemon status         # check if running
 lore-daemon stop           # stop background daemon
 ```
@@ -166,6 +172,8 @@ claude_model = "claude-sonnet-4-20250514"
 
 [consolidation]
 interval_secs = 7200
+idle_threshold_secs = 300       # wait 5 min before digesting a session
+max_turns_per_extraction = 200  # chunk large conversations
 similarity_threshold = 0.8
 merge_threshold = 0.85
 min_relevance_prune = 0.02
@@ -178,7 +186,7 @@ path = "~/.lore/memory.db"
 
 ```sh
 cargo build              # build all crates
-cargo test               # 102 tests
+cargo test               # 105 tests
 cargo clippy --workspace # lint
 cargo fmt --all          # format
 ```

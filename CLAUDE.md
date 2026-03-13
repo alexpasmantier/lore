@@ -2,7 +2,7 @@
 
 ## Build & Test
 - Build all: `cargo build`
-- Test all: `cargo test` (97 tests across 3 crates)
+- Test all: `cargo test` (105 tests across 3 crates)
 - Test single crate: `cargo test -p lore-db`
 - Run MCP server: `cargo run -p lore-mcp`
 - Run daemon: `cargo run -p lore-daemon -- start`
@@ -13,8 +13,8 @@
 ## Architecture
 - **lore-db**: Core library. Persistent memory database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
 - **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
-- **lore-daemon**: Background process. Ingests conversations from `~/.claude/projects/`, extracts knowledge via Claude API, consolidates memory. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
-- **lore-tray**: System tray icon (HAL 9000 style). Monitors `~/.lore/daemon.status` and provides start/stop/trigger controls. Requires GTK3 + libappindicator on Linux.
+- **lore-daemon**: Background process. Two-phase pipeline: ingestion stages raw conversation turns from `~/.claude/projects/` into SQLite (fast, no API calls); consolidation digests idle sessions with full context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
+- **lore-tray**: Desktop app (HAL 9000 style tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
 
 ## Installed State
@@ -24,6 +24,8 @@
 - Database at `~/.lore/memory.db`
 - Daemon status at `~/.lore/daemon.status` (JSON, written by daemon, read by tray and `lore-daemon status`)
 - To rebuild and reinstall: `cargo build --release -p lore-mcp -p lore-daemon -p lore-tray && cp target/release/lore-{mcp,daemon,tray} ~/.local/bin/`
+- macOS app bundle: `just bundle-macos` → `target/Lore.app`
+- Linux desktop install: `just install-linux`
 
 ## Brain-Inspired Memory Model
 - **Relevance scoring**: Ebbinghaus forgetting curve with reinforcement. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`. Strength grows logarithmically with access count.
@@ -46,8 +48,10 @@
 - Daemon uses `claude -p` CLI fallback when no API key is available (removes CLAUDECODE env var to avoid nesting error).
 - Subagent JSONL files (`subagents/` dirs) are skipped during ingestion — mostly tool call noise.
 - Fragment columns include `importance` (f32), `relevance_score` (f32), `decay_rate` (f32), `last_reinforced` (i64). Schema auto-migrates via `migrate_v2()`.
-- Consolidation Phase 0 recomputes all relevance scores (sleep cycle). Phase 6 prunes forgotten fragments.
+- Ingestion stages raw turns into `staged_turns` table (no Claude calls). Consolidation Phase 0 digests idle sessions (default 5 min threshold) with full conversation context. Large conversations are chunked at `max_turns_per_extraction` (default 200).
+- Consolidation Phase 1 recomputes all relevance scores (sleep cycle). Phase 7 prunes forgotten fragments.
 - Extraction prompt includes existing topic content (200 char preview) and children summaries to reduce duplicate topic creation.
+- Cross-platform paths via `dirs` crate. Shared `lore_home()` helper in `lore-db`. Never use raw `$HOME`.
 - MCP tools `query_memory`, `explore_memory`, and `list_topics` accept a `limit` parameter to control result count.
 
 ## Key Dependencies
