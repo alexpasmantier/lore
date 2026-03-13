@@ -1,6 +1,6 @@
 # lore
 
-Empirical memory for AI agents. Lore builds a centralized knowledge base from experience — it watches past conversations across all sessions and projects, extracts what was learned, and organizes it into interconnected abstraction trees that any agent can query. Knowledge accumulated in one context is available to every future agent. Over time, a background consolidation process merges duplicates, resolves contradictions, and lets unused knowledge fade.
+Empirical memory for AI agents. Lore builds a centralized knowledge base from experience — it watches past conversations across all sessions and projects, extracts what was learned, and organizes it into a centralized database that any agent can query. Knowledge accumulated in one context is available to every future agent. Over time, a background consolidation process merges duplicates, resolves contradictions, and lets unused knowledge fade.
 
 Agents query the graph through [MCP](https://modelcontextprotocol.io) tools: semantic search at any zoom level, tree exploration to drill from broad concepts into specifics, lateral traversal across associative links, and direct storage for explicit knowledge. Queries blend semantic similarity with a time-decaying relevance score — frequently accessed and recent knowledge surfaces first, while stale fragments naturally fade.
 
