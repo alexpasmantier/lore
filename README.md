@@ -75,12 +75,34 @@ Runs periodically (default: every 2 hours) and walks the entire graph:
 
 ## Install
 
+### macOS
+
 ```sh
-cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
-cp target/release/lore-mcp target/release/lore-daemon target/release/lore-tray ~/.local/bin/
+just bundle-macos
+cp -r target/Lore.app ~/Applications/
 ```
 
-> **Linux prerequisites for lore-tray:** `sudo apt install libgtk-3-dev libayatana-appindicator3-dev`
+Launch **Lore** from Spotlight or Finder. The app runs as a menu bar icon — it auto-starts the daemon in the background and stops it on quit. To start on login, add it via **System Settings > General > Login Items**.
+
+### Linux
+
+```sh
+sudo apt install libgtk-3-dev libayatana-appindicator3-dev  # Debian/Ubuntu
+just install-linux
+```
+
+This installs the binaries to `~/.local/bin/` and registers a `.desktop` entry so **Lore** appears in your application launcher.
+
+> **GNOME users:** The system tray requires the AppIndicator extension. On Ubuntu: `gnome-extensions enable ubuntu-appindicators@ubuntu.com`. On other GNOME distros: install and enable `gnome-shell-extension-appindicator`.
+
+### Manual install
+
+```sh
+cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
+cp target/release/lore-{mcp,daemon,tray} ~/.local/bin/
+```
+
+### MCP server registration
 
 Register the MCP server (user-level, all sessions):
 
@@ -89,6 +111,25 @@ claude mcp add --scope user memory -- lore-mcp
 ```
 
 ## Usage
+
+### Desktop app
+
+The Lore tray icon lives in your menu bar / system tray. It automatically starts the daemon when launched and stops it on quit. The icon reflects the daemon's current state:
+
+| State | Appearance |
+|-------|------------|
+| **Stopped** | Dim red — the eye is barely glowing |
+| **Idle** | Bright red — full intensity |
+| **Ingesting** | Red, pulsing — breathing animation |
+| **Consolidating** | Orange, pulsing — breathing animation |
+
+The context menu shows the current version and status, and provides controls to:
+
+- **Start / Stop Daemon** — toggle the background daemon
+- **Trigger Ingestion** — run a single ingestion pass on demand
+- **Trigger Consolidation** — run a single consolidation pass on demand
+- **View Logs** — opens `~/.lore/daemon.log`
+- **Quit** — stop the daemon and exit
 
 ### MCP tools
 
@@ -100,7 +141,9 @@ claude mcp add --scope user memory -- lore-mcp
 | `store_memory` | Explicitly store a piece of knowledge. |
 | `list_topics` | List top-level topics, sorted by relevance. Optional `limit`. |
 
-### Daemon
+### Daemon CLI
+
+The daemon can also be used standalone without the tray app:
 
 ```sh
 lore-daemon start          # foreground
@@ -110,32 +153,6 @@ lore-daemon consolidate    # single consolidation pass
 lore-daemon status         # check if running
 lore-daemon stop           # stop background daemon
 ```
-
-### System tray
-
-```sh
-lore-tray
-```
-
-> **GNOME users:** The system tray requires the AppIndicator extension. On Ubuntu: `gnome-extensions enable ubuntu-appindicators@ubuntu.com`. On other GNOME distros: install and enable `gnome-shell-extension-appindicator`.
-
-The tray icon reflects the daemon's current state:
-
-| State | Appearance |
-|-------|------------|
-| **Stopped** | Dim red — the eye is barely glowing |
-| **Idle** | Bright red — full intensity |
-| **Ingesting** | Red, pulsing — breathing animation |
-| **Consolidating** | Orange, pulsing — breathing animation |
-
-Right-click the icon to access the context menu:
-
-- **Start Daemon** / **Stop Daemon** — toggle the background daemon
-- **Trigger Ingestion** — run a single ingestion pass on demand
-- **Trigger Consolidation** — run a single consolidation pass on demand
-- **View Logs** — opens `~/.lore/daemon.log` in a terminal
-
-The tray polls `~/.lore/daemon.status` to stay in sync with the daemon.
 
 ### Configuration
 
@@ -161,7 +178,7 @@ path = "~/.lore/memory.db"
 
 ```sh
 cargo build              # build all crates
-cargo test               # 97 tests
+cargo test               # 102 tests
 cargo clippy --workspace # lint
 cargo fmt --all          # format
 ```
