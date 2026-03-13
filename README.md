@@ -6,14 +6,14 @@ Agents query the graph through [MCP](https://modelcontextprotocol.io) tools: sem
 
 ## How it works
 
-Knowledge is stored in a tree of increasing specificity. Each node is a self-contained summary; children elaborate on their parent:
+Knowledge is stored as a tree of abstraction levels. Higher nodes capture general concepts; deeper nodes stay closer to the specifics of the original conversation. Every node is a self-contained summary.
 
-| Depth | Role | Example |
-|-------|------|---------|
-| 0 | **Topic** | "Rust async programming" |
-| 1 | **Concept** | "tokio runtime model" |
-| 2 | **Fact** | "tokio uses work-stealing scheduler" |
-| 3+ | **Detail** | "`#[tokio::main(flavor = \"multi_thread\")]` for CPU-bound" |
+| Depth | Abstraction | Example |
+|-------|-------------|---------|
+| 0 | Broad concept | "Rust async programming" |
+| 1 | Narrower aspect | "tokio runtime model and trade-offs" |
+| 2 | Specific finding | "work-stealing scheduler causes issues with CPU-bound tasks" |
+| 3+ | Concrete detail | "`#[tokio::main(flavor = \"multi_thread\")]` needed for CPU-bound" |
 
 Queries start broad and drill deeper as needed.
 

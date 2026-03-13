@@ -107,9 +107,15 @@ Each node must include an `importance` field. Use these criteria:
   - Information easily found in documentation
   - One-off debugging steps for resolved issues
 
-## Model
+## Abstraction model
 
-Each node is a **self-contained summary**. Children are **drill-downs** that elaborate on their parent. Every node should be readable on its own. Keep summaries short (under 60 chars). Aim for 1-3 topics per conversation, with 1-2 levels of children. Fewer high-quality nodes is better than many shallow ones.
+Knowledge is organized as a tree of **abstraction levels**. Higher nodes capture general ideas and concepts; deeper nodes stay closer to the specifics of the original conversation. Every node is a self-contained summary readable on its own.
+
+- **Root (depth 0)**: A broad concept or theme (e.g. "Rust error handling patterns")
+- **Middle levels**: Narrower aspects, design decisions, trade-offs
+- **Leaf levels**: Concrete details, specific commands, exact findings
+
+Keep summaries short (under 60 chars). Aim for 1-3 root topics per conversation, with 1-2 levels of children. Fewer high-quality nodes is better than many shallow ones.
 
 "#,
     );

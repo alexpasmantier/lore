@@ -30,13 +30,14 @@
 ## Brain-Inspired Memory Model
 - **Relevance scoring**: Ebbinghaus forgetting curve with reinforcement. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`. Strength grows logarithmically with access count.
 - **Reconsolidation on recall**: Accessing a fragment reinforces it (resets decay timer) and spreads activation to neighbors.
-- **Importance weighting**: Fragments are scored high/medium/low at ingestion. Importance controls decay rate (high=slow, low=fast) and relevance floor.
+- **Importance weighting**: Fragments are scored high/medium/low at extraction. Importance controls decay rate (high=slow, low=fast) and relevance floor.
 - **Blended query ranking**: `score = 0.7 * semantic_similarity + 0.3 * relevance_score`. Stale fragments rank lower.
 - **Forgetting**: Fragments below relevance threshold (0.05) are invisible to queries. During consolidation, truly forgotten fragments (relevance < 0.02, age > 60d, never accessed) are pruned.
 - **Topic merging**: Topics above `merge_threshold` (default 0.85) are merged during consolidation. The survivor is the more-accessed topic; the victim's children are reparented.
 - **Contradiction resolution**: Sibling pairs are batch-checked (up to 10 per API call) for contradictions. The older fragment is superseded.
 - **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
 - **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
+- **Abstraction hierarchy**: Fragments form trees of abstraction levels. Depth 0 = broad concepts, deeper = closer to original conversation specifics. All fragments are the same type, differing only in abstraction level and content.
 
 ## Conventions
 - All timestamps are Unix seconds (i64).
