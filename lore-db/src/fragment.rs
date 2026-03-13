@@ -34,9 +34,10 @@ impl std::fmt::Display for FragmentId {
 
 /// A unit of knowledge — like a neuron ensemble encoding a concept.
 ///
-/// Fragments form trees of abstraction levels: higher nodes capture general
-/// concepts, deeper nodes stay closer to the specifics of the original
-/// conversation. Each node is a self-contained piece of knowledge.
+/// Fragments are organized as interconnected abstraction trees: higher nodes
+/// capture general concepts, deeper nodes stay closer to the specifics of
+/// the original conversation. Associative edges link related fragments across
+/// different trees. Each node is a self-contained piece of knowledge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fragment {
     pub id: FragmentId,

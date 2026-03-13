@@ -11,7 +11,7 @@
 - Format: `cargo fmt --all`
 
 ## Architecture
-- **lore-db**: Core library. Persistent memory database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
+- **lore-db**: Core library. Stores knowledge as interconnected abstraction trees in SQLite with fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
 - **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_roots`.
 - **lore-daemon**: Background process. Two-phase pipeline: ingestion stages raw conversation turns from `~/.claude/projects/` into SQLite (fast, no API calls); consolidation digests idle sessions with full context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
 - **lore-tray**: Desktop app (HAL 9000 style tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
@@ -37,7 +37,7 @@
 - **Contradiction resolution**: Sibling pairs are batch-checked (up to 10 per API call) for contradictions. The older fragment is superseded.
 - **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
 - **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
-- **Abstraction hierarchy**: Fragments form trees of abstraction levels. Depth 0 = broad concepts, deeper = closer to original conversation specifics. All fragments are the same type, differing only in abstraction level and content.
+- **Interconnected abstraction trees**: Fragments form trees where depth 0 = broad concepts and deeper = closer to original conversation specifics. All fragments are the same type, differing only in abstraction level and content. Associative edges link related fragments across different trees.
 
 ## Conventions
 - All timestamps are Unix seconds (i64).

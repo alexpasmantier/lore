@@ -447,14 +447,16 @@ impl MemoryServer {
 impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Lore: Persistent memory for AI agents.\n\
+            "Lore: Persistent memory for AI agents. Knowledge is organized as interconnected \
+             abstraction trees — broad concepts at the top, conversation-specific details deeper down, \
+             with associative edges linking related fragments across trees.\n\n\
              Recommended workflow:\n\
-             1. list_roots — see what knowledge domains exist (table of contents)\n\
-             2. explore_memory — drill into a root to see its full subtree (hierarchical)\n\
-             3. query_memory — broad semantic search across all fragments at a given depth (flat ranked list)\n\
-             4. traverse_memory — navigate from a specific fragment to its children, parent, or associations\n\n\
-             Key distinction: query_memory returns a flat list filtered by depth level. \
-             explore_memory returns a tree rooted at the best match with children expanded. \
+             1. list_roots — see the top-level knowledge areas\n\
+             2. explore_memory — drill into a root to see its full subtree\n\
+             3. query_memory — semantic search across all fragments at a given depth\n\
+             4. traverse_memory — navigate from a fragment to its children, parent, or associations\n\n\
+             Key distinction: query_memory returns a flat ranked list. \
+             explore_memory returns a tree with children expanded. \
              Use query_memory when you don't know where to look; use explore_memory when you want \
              to see everything under a known root.",
         )
