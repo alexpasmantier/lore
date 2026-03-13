@@ -11,46 +11,44 @@ version: 0.1.0
 
 # Lore: Long-Term Memory
 
-You have access to a persistent long-term memory system called **Lore**. This gives you memory that persists across conversations, organized as a hierarchical knowledge graph.
-
-## How Memory is Organized
-
-Knowledge is stored as **zoom-trees** where each node is a self-contained summary and children are drill-downs of their parent:
-- **Depth 0 — Overviews**: Rich, self-contained paragraph summaries of a knowledge area
-- **Depth 1+ — Drill-downs**: Progressively more detailed elaborations on the parent
-
-Each node is readable on its own — children add detail, not just categorize. Fragments are also connected by **associative links** (cross-topic relationships) and **temporal links** (sequential reading order).
+You have access to a persistent long-term memory system called **Lore**. Knowledge is organized as interconnected abstraction trees — broad concepts at the top, conversation-specific details deeper down, with associative edges linking related fragments across trees.
 
 ## How Memory Behaves
 
 Memory is dynamic — it behaves more like biological memory than a static database:
 - **Memories decay over time**: Relevance fades following the Ebbinghaus forgetting curve. Old, unaccessed memories rank lower and eventually become invisible.
-- **Accessing memories reinforces them**: When you query and retrieve a memory, it gets reinforced — its decay timer resets and connected memories get a small activation boost.
-- **Importance matters**: High-importance memories (architectural decisions, user corrections) decay much slower and maintain a minimum relevance floor. Low-importance memories fade quickly if not accessed.
-- **Results are ranked by relevance**: Query results blend semantic similarity (70%) with temporal relevance (30%), so fresh or frequently-accessed memories rank higher.
+- **Accessing memories reinforces them**: When you read a memory, it gets reinforced — its decay timer resets and connected memories get a small activation boost.
+- **Importance matters**: High-importance memories (architectural decisions, user corrections) decay much slower and maintain a minimum relevance floor.
+- **Results are ranked by relevance**: Search results blend semantic similarity (70%) with temporal relevance (30%).
 
 ## Available Tools
 
-### `query_memory`
-Search for knowledge about a topic at a specific depth. **Start at depth 0 or 1**, then drill deeper. Use `limit` to control how many results you get back (default 10) — use fewer for focused lookups, more for broad exploration.
+### `search`
+Semantic search across memory. Returns **IDs and scores only** — no content. Use `read` to get content of specific results. Pass `parent_id` to restrict search to descendants of a fragment.
 
-### `explore_memory`
-Get a full tree view of a knowledge area — shows the hierarchical structure. `limit` controls how many topic trees are returned (default 3).
-
-### `traverse_memory`
-Navigate from a specific fragment: get its children (drill deeper), parent (zoom out), or associations (lateral connections).
-
-### `store_memory`
-Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level. If you omit the parent ID for depth > 0, the system automatically assigns the fragment to the most semantically similar existing root.
+### `read`
+Read the full content of a fragment, plus its structural connections (parent ID, children IDs, association IDs) for navigation.
 
 ### `list_roots`
-See root-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Supports pagination (`limit`/`offset`) and keyword filtering (`query`). Returns pagination metadata (`total`, `offset`, `limit`).
+List root-level fragments (the broadest knowledge areas). Returns IDs and child counts only.
 
-### `delete_memory`
-Remove a memory fragment and all its edges. Use this to clean up incorrect, outdated, or duplicate knowledge.
+### `store`
+Store a piece of knowledge. Provide content, optional parent ID, and depth (0=broad concept, higher=more specific).
 
-### `update_memory`
-Update the content and summary of an existing fragment in-place. The embedding is automatically recomputed.
+### `delete`
+Remove a fragment and all its edges.
+
+### `update`
+Update the content of an existing fragment. The embedding is recomputed automatically.
+
+## Workflow: Search → Read → Narrow → Read
+
+Each step is lightweight — content is only loaded when you explicitly read.
+
+1. `search(query)` — find relevant fragments (IDs only)
+2. `read(id)` — read content, see children/associations
+3. `search(query, parent_id=id)` — narrow search within a subtree
+4. Repeat until you have the detail you need.
 
 ## When to Use Memory
 
@@ -66,7 +64,6 @@ Update the content and summary of an existing fragment in-place. The embedding i
 
 ## Best Practices
 
-1. **Start broad, drill deep**: Query at depth 0-1 first, then use `traverse_memory` to go deeper
-2. **Check before storing**: Use `query_memory` to avoid duplicating existing knowledge
-3. **Use meaningful summaries**: The summary field is used for tree browsing — make it descriptive
-4. **Connect to existing roots**: When storing, find the right parent root rather than creating orphans
+1. **Start broad, drill deep**: Search globally first, then use `parent_id` to narrow
+2. **Check before storing**: Search to avoid duplicating existing knowledge
+3. **Connect to existing roots**: When storing, find the right parent rather than creating orphans

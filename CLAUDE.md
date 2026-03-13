@@ -12,7 +12,7 @@
 
 ## Architecture
 - **lore-db**: Core library. Stores knowledge as interconnected abstraction trees in SQLite with fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
-- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_roots`.
+- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 6 tools: `search`, `read`, `list_roots`, `store`, `update`, `delete`.
 - **lore-daemon**: Background process. Two-phase pipeline: ingestion stages raw conversation turns from `~/.claude/projects/` into SQLite (fast, no API calls); consolidation digests idle sessions with full context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
 - **lore-tray**: Desktop app (HAL 9000 style tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
@@ -53,7 +53,7 @@
 - Consolidation Phase 1 recomputes all relevance scores (sleep cycle). Phase 7 prunes forgotten fragments.
 - Extraction prompt includes existing root content (200 char preview) and children content to reduce duplicate root creation.
 - Cross-platform paths via `dirs` crate. Shared `lore_home()` helper in `lore-db`. Never use raw `$HOME`.
-- MCP tools `query_memory`, `explore_memory`, and `list_roots` accept a `limit` parameter to control result count.
+- MCP tools `search`, `list_roots` accept a `limit` parameter. `search` returns IDs/scores only; `read` returns content + structural IDs. Iterative walk: search → read → search(parent_id) → read.
 
 ## Key Dependencies
 - `rmcp` 1.2 — MCP server SDK. Uses `#[tool_router]` + `#[tool_handler]` macro pattern. Needs `schemars` 1.x (not 0.8).

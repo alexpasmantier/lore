@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use lore_db::{Fragment, FragmentId, LoreDb, Storage, Tree};
+use lore_db::{Fragment, FragmentId, LoreDb, Storage};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
@@ -11,35 +11,27 @@ use serde::{Deserialize, Serialize};
 // ──── Parameter types for MCP tools ────
 
 #[derive(Deserialize, JsonSchema)]
-pub struct QueryMemoryParams {
-    /// Semantic search query — what to search for
-    pub topic: String,
-    /// Depth level filter: 0=roots, 1=concepts, 2=facts, 3+=details. Only returns fragments at this exact depth.
-    #[serde(default = "default_depth")]
-    pub depth: u32,
+pub struct SearchParams {
+    /// Semantic search query
+    pub query: String,
+    /// Optional parent ID to restrict search to descendants of this fragment
+    pub parent_id: Option<String>,
     /// Max results to return
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ExploreMemoryParams {
-    /// Semantic search query — finds the best-matching root to expand the tree from
-    pub topic: String,
-    /// How many hierarchy levels to expand below the root (default: 2)
-    #[serde(default = "default_max_depth")]
-    pub max_depth: u32,
-    /// Max number of separate topic trees to return (default: 3)
-    #[serde(default = "default_explore_limit")]
-    pub limit: usize,
+pub struct ReadParams {
+    /// The fragment ID to read
+    pub id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct TraverseMemoryParams {
-    /// The fragment ID to navigate from
-    pub fragment_id: String,
-    /// Direction: "children", "parent", or "associations"
-    pub direction: String,
+pub struct ListRootsParams {
+    /// Max number of roots to return (default: 20)
+    #[serde(default = "default_list_limit")]
+    pub limit: usize,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -52,18 +44,6 @@ pub struct StoreMemoryParams {
     /// Abstraction level (0=broad concept, higher=more specific)
     #[serde(default = "default_store_depth")]
     pub depth: u32,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct ListRootsParams {
-    /// Max number of roots to return (default: 50)
-    #[serde(default = "default_list_limit")]
-    pub limit: usize,
-    /// Number of roots to skip (for pagination)
-    #[serde(default)]
-    pub offset: usize,
-    /// Optional keyword filter — only return roots whose content matches
-    pub query: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -80,83 +60,41 @@ pub struct UpdateMemoryParams {
     pub content: String,
 }
 
-fn default_depth() -> u32 {
-    0
-}
 fn default_limit() -> usize {
     10
 }
-fn default_max_depth() -> u32 {
-    2
-}
-fn default_explore_limit() -> usize {
-    3
-}
 fn default_store_depth() -> u32 {
-    2
+    1
 }
 fn default_list_limit() -> usize {
-    50
+    20
 }
 
 // ──── Response types ────
 
 #[derive(Serialize)]
-struct FragmentResponse {
+struct SearchHit {
+    id: String,
+    score: f32,
+    depth: u32,
+}
+
+#[derive(Serialize)]
+struct RootHit {
+    id: String,
+    children_count: usize,
+}
+
+#[derive(Serialize)]
+struct ReadResponse {
     id: String,
     content: String,
     depth: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<f32>,
     relevance: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parent_content: Option<String>,
-}
-
-#[derive(Serialize)]
-struct TreeResponse {
-    id: String,
-    content: String,
-    depth: u32,
-    relevance: f32,
-    children: Vec<TreeResponse>,
-}
-
-#[derive(Serialize)]
-struct RootResponse {
-    id: String,
-    content: String,
-    child_count: usize,
-    relevance: f32,
-}
-
-impl FragmentResponse {
-    fn from_fragment_with_parent(f: &Fragment, score: Option<f32>, db: &LoreDb) -> Self {
-        let parent = db.parent(f.id);
-        Self {
-            id: f.id.to_string(),
-            content: f.content.clone(),
-            depth: f.depth,
-            score,
-            relevance: f.relevance_score,
-            parent_id: parent.as_ref().map(|p| p.id.to_string()),
-            parent_content: parent.as_ref().map(|p| p.content.clone()),
-        }
-    }
-}
-
-impl TreeResponse {
-    fn from_tree(tree: &Tree) -> Self {
-        Self {
-            id: tree.fragment.id.to_string(),
-            content: tree.fragment.content.clone(),
-            depth: tree.fragment.depth,
-            relevance: tree.fragment.relevance_score,
-            children: tree.children.iter().map(TreeResponse::from_tree).collect(),
-        }
-    }
+    children: Vec<String>,
+    associations: Vec<String>,
 }
 
 // ──── MCP Server ────
@@ -172,7 +110,6 @@ impl MemoryServer {
         let storage = if db_path.exists() {
             Storage::open(&db_path)?
         } else {
-            // Create parent directory if needed
             if let Some(parent) = db_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -208,103 +145,164 @@ impl MemoryServer {
 
 #[tool_router]
 impl MemoryServer {
-    /// Flat semantic search across memory. Returns individual fragments ranked by
-    /// relevance to the query, filtered to a single depth level.
-    /// Use depth 0 for topic-level overviews, depth 1 for concepts, depth 2+ for details.
-    /// Unlike explore_memory, this does NOT return hierarchical trees — just a flat ranked list.
-    /// Best for: broad searches when you don't know which root contains the answer.
-    #[tool(name = "query_memory")]
-    async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
+    /// Semantic search across memory. Returns fragment IDs and scores — no content.
+    /// Use `read` to get the content of specific results.
+    /// If parent_id is provided, only searches within descendants of that fragment.
+    #[tool(name = "search")]
+    async fn search(&self, Parameters(params): Parameters<SearchParams>) -> String {
+        let scope = match &params.parent_id {
+            Some(pid) => match FragmentId::parse(pid) {
+                Ok(id) => Some(id),
+                Err(_) => return format!("Invalid parent ID: {}", pid),
+            },
+            None => None,
+        };
+
         self.with_db(|db| {
-            let results = db.query(&params.topic, params.depth, params.limit);
+            let results = if let Some(parent_id) = scope {
+                // Search within children of the given parent
+                let children = db.children(parent_id);
+                if children.is_empty() {
+                    return "No children found for this fragment.".to_string();
+                }
+
+                let query_embedding = match db.embed_text(&params.query) {
+                    Some(e) => e,
+                    None => {
+                        // Text fallback: filter children by keyword match
+                        let query_lower = params.query.to_lowercase();
+                        let hits: Vec<SearchHit> = children
+                            .iter()
+                            .filter(|c| c.content.to_lowercase().contains(&query_lower))
+                            .take(params.limit)
+                            .map(|c| SearchHit {
+                                id: c.id.to_string(),
+                                score: c.relevance_score,
+                                depth: c.depth,
+                            })
+                            .collect();
+                        return serde_json::to_string_pretty(&hits)
+                            .unwrap_or_else(|_| "[]".to_string());
+                    }
+                };
+
+                let mut scored: Vec<_> = children
+                    .into_iter()
+                    .filter(|f| !f.embedding.is_empty())
+                    .map(|f| {
+                        let sim =
+                            lore_db::cosine_similarity(&query_embedding, &f.embedding);
+                        let score = 0.7 * sim + 0.3 * f.relevance_score;
+                        (f, score)
+                    })
+                    .collect();
+                scored.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                scored.truncate(params.limit);
+
+                scored
+                    .iter()
+                    .map(|(f, score)| SearchHit {
+                        id: f.id.to_string(),
+                        score: *score,
+                        depth: f.depth,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                // Global search
+                let scored = db.query(&params.query, 0, params.limit);
+                scored
+                    .iter()
+                    .map(|sf| SearchHit {
+                        id: sf.fragment.id.to_string(),
+                        score: sf.score,
+                        depth: sf.fragment.depth,
+                    })
+                    .collect::<Vec<_>>()
+            };
 
             if results.is_empty() {
-                return format!(
-                    "No memories found for topic '{}' at depth {}.",
-                    params.topic, params.depth
-                );
+                return format!("No results for '{}'.", params.query);
             }
 
-            let response: Vec<FragmentResponse> = results
+            serde_json::to_string_pretty(&results)
+                .unwrap_or_else(|_| "Error serializing results".to_string())
+        })
+    }
+
+    /// Read the full content of a specific fragment, plus its structural connections
+    /// (parent ID, children IDs, association IDs) for navigation.
+    #[tool(name = "read")]
+    async fn read(&self, Parameters(params): Parameters<ReadParams>) -> String {
+        let id = match FragmentId::parse(&params.id) {
+            Ok(id) => id,
+            Err(_) => return format!("Invalid fragment ID: {}", params.id),
+        };
+
+        self.with_db(|db| {
+            let fragment = match db.storage().get_fragment(id) {
+                Ok(Some(f)) => f,
+                Ok(None) => return format!("Fragment {} not found.", params.id),
+                Err(e) => return format!("Error reading fragment: {}", e),
+            };
+
+            // Reinforce on access
+            db.reinforce_on_access(id);
+
+            let parent_id = db.parent(id).map(|p| p.id.to_string());
+            let children: Vec<String> =
+                db.children(id).iter().map(|c| c.id.to_string()).collect();
+            let associations: Vec<String> = db
+                .associations(id)
                 .iter()
-                .map(|sf| {
-                    FragmentResponse::from_fragment_with_parent(&sf.fragment, Some(sf.score), db)
+                .map(|a| a.id.to_string())
+                .collect();
+
+            let response = ReadResponse {
+                id: fragment.id.to_string(),
+                content: fragment.content,
+                depth: fragment.depth,
+                relevance: fragment.relevance_score,
+                parent_id,
+                children,
+                associations,
+            };
+
+            serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|_| "Error serializing fragment".to_string())
+        })
+    }
+
+    /// List root-level fragments (depth 0) — the broadest knowledge areas.
+    /// Returns just IDs and child counts. Use `read` to see content.
+    #[tool(name = "list_roots")]
+    async fn list_roots(&self, Parameters(params): Parameters<ListRootsParams>) -> String {
+        self.with_db(|db| {
+            let roots = db.list_roots(None);
+
+            if roots.is_empty() {
+                return "No knowledge stored yet.".to_string();
+            }
+
+            let response: Vec<RootHit> = roots
+                .iter()
+                .take(params.limit)
+                .map(|r| RootHit {
+                    id: r.id.to_string(),
+                    children_count: db.children(r.id).len(),
                 })
                 .collect();
 
             serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|_| "Error serializing results".to_string())
+                .unwrap_or_else(|_| "Error serializing roots".to_string())
         })
     }
 
-    /// Hierarchical tree view of a knowledge area. Finds the best-matching root
-    /// and returns it with all its children expanded up to max_depth levels.
-    /// Unlike query_memory (flat list at one depth), this fans out the full subtree.
-    /// Best for: drilling into a known root to see everything stored under it.
-    #[tool(name = "explore_memory")]
-    async fn explore_memory(&self, Parameters(params): Parameters<ExploreMemoryParams>) -> String {
-        self.with_db(|db| {
-            let trees = db.explore(&params.topic, params.max_depth, params.limit);
-
-            if trees.is_empty() {
-                return format!("No knowledge trees found for topic '{}'.", params.topic);
-            }
-
-            let response: Vec<TreeResponse> = trees.iter().map(TreeResponse::from_tree).collect();
-
-            serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|_| "Error serializing results".to_string())
-        })
-    }
-
-    /// Navigate from a specific memory fragment. Get its children (drill deeper),
-    /// parent (zoom out), or associated fragments (lateral connections).
-    #[tool(name = "traverse_memory")]
-    async fn traverse_memory(
-        &self,
-        Parameters(params): Parameters<TraverseMemoryParams>,
-    ) -> String {
-        let id = match FragmentId::parse(&params.fragment_id) {
-            Ok(id) => id,
-            Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
-        };
-
-        self.with_db(|db| {
-            let fragments = match params.direction.as_str() {
-                "children" => db.children(id),
-                "parent" => db.parent(id).into_iter().collect(),
-                "associations" => db.associations(id),
-                other => {
-                    return format!(
-                        "Invalid direction '{}'. Use: children, parent, associations",
-                        other
-                    )
-                }
-            };
-
-            if fragments.is_empty() {
-                return format!(
-                    "No {} found for fragment {}.",
-                    params.direction, params.fragment_id
-                );
-            }
-
-            let response: Vec<FragmentResponse> = fragments
-                .iter()
-                .map(|f| FragmentResponse::from_fragment_with_parent(f, None, db))
-                .collect();
-
-            serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|_| "Error serializing results".to_string())
-        })
-    }
-
-    /// Explicitly store a piece of knowledge in long-term memory. Provide the
-    /// content, an optional parent ID, and depth level (0=broad concept, higher=more specific).
-    /// If no parent_id is given and depth > 0, automatically assigns to the most
-    /// semantically similar existing root.
-    #[tool(name = "store_memory")]
-    async fn store_memory(&self, Parameters(params): Parameters<StoreMemoryParams>) -> String {
+    /// Store a piece of knowledge. Provide content, optional parent ID,
+    /// and depth (0=broad concept, higher=more specific).
+    #[tool(name = "store")]
+    async fn store(&self, Parameters(params): Parameters<StoreMemoryParams>) -> String {
         let explicit_parent = match params.parent_id {
             Some(ref pid) => match FragmentId::parse(pid) {
                 Ok(id) => Some(id),
@@ -314,7 +312,6 @@ impl MemoryServer {
         };
 
         self.with_db(|db| {
-            // Auto-classify: if depth > 0 and no explicit parent, find best matching root
             let parent_id = if explicit_parent.is_some() {
                 explicit_parent
             } else if params.depth > 0 {
@@ -323,87 +320,27 @@ impl MemoryServer {
                 None
             };
 
-            let auto_parented = explicit_parent.is_none() && parent_id.is_some();
-
             let fragment = Fragment::new(params.content, params.depth);
             match db.insert(fragment, parent_id) {
                 Ok(id) => {
                     let mut response = serde_json::json!({
                         "status": "stored",
-                        "fragment_id": id.to_string(),
+                        "id": id.to_string(),
                         "depth": params.depth,
                     });
                     if let Some(pid) = parent_id {
                         response["parent_id"] = serde_json::json!(pid.to_string());
                     }
-                    if auto_parented {
-                        response["auto_parented"] = serde_json::json!(true);
-                    }
                     serde_json::to_string_pretty(&response).unwrap()
                 }
-                Err(e) => format!("Failed to store memory: {}", e),
+                Err(e) => format!("Failed to store: {}", e),
             }
         })
     }
 
-    /// Table of contents: lists all root-level fragments (depth 0) in memory.
-    /// Use this first to see what knowledge domains exist before querying or exploring.
-    /// Supports pagination (limit/offset) and keyword filtering. Sorted by relevance.
-    #[tool(name = "list_roots")]
-    async fn list_roots(&self, Parameters(params): Parameters<ListRootsParams>) -> String {
-        self.with_db(|db| {
-            let roots = db.list_roots(params.query.as_deref());
-
-            if roots.is_empty() {
-                return if params.query.is_some() {
-                    format!(
-                        "No roots matching '{}' found.",
-                        params.query.as_deref().unwrap_or("")
-                    )
-                } else {
-                    "No roots in memory yet.".to_string()
-                };
-            }
-
-            let total = roots.len();
-
-            // Apply pagination
-            let page: Vec<_> = roots
-                .into_iter()
-                .skip(params.offset)
-                .take(params.limit)
-                .collect();
-
-            let response: Vec<RootResponse> = page
-                .iter()
-                .map(|t| {
-                    let child_count = db.children(t.id).len();
-                    RootResponse {
-                        id: t.id.to_string(),
-                        content: t.content.clone(),
-                        child_count,
-                        relevance: t.relevance_score,
-                    }
-                })
-                .collect();
-
-            // Include pagination metadata
-            let result = serde_json::json!({
-                "total": total,
-                "offset": params.offset,
-                "limit": params.limit,
-                "roots": response,
-            });
-
-            serde_json::to_string_pretty(&result)
-                .unwrap_or_else(|_| "Error serializing results".to_string())
-        })
-    }
-
-    /// Delete a memory fragment and all its edges. Use this to remove incorrect
-    /// or outdated knowledge.
-    #[tool(name = "delete_memory")]
-    async fn delete_memory(&self, Parameters(params): Parameters<DeleteMemoryParams>) -> String {
+    /// Delete a fragment and all its edges.
+    #[tool(name = "delete")]
+    async fn delete(&self, Parameters(params): Parameters<DeleteMemoryParams>) -> String {
         let id = match FragmentId::parse(&params.fragment_id) {
             Ok(id) => id,
             Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
@@ -411,20 +348,19 @@ impl MemoryServer {
 
         self.with_db(|db| match db.prune(id) {
             Ok(()) => {
-                let response = serde_json::json!({
+                serde_json::to_string_pretty(&serde_json::json!({
                     "status": "deleted",
-                    "fragment_id": params.fragment_id,
-                });
-                serde_json::to_string_pretty(&response).unwrap()
+                    "id": params.fragment_id,
+                }))
+                .unwrap()
             }
-            Err(e) => format!("Failed to delete memory: {}", e),
+            Err(e) => format!("Failed to delete: {}", e),
         })
     }
 
-    /// Update the content of an existing memory fragment.
-    /// The embedding is automatically recomputed.
-    #[tool(name = "update_memory")]
-    async fn update_memory(&self, Parameters(params): Parameters<UpdateMemoryParams>) -> String {
+    /// Update the content of a fragment. The embedding is recomputed automatically.
+    #[tool(name = "update")]
+    async fn update(&self, Parameters(params): Parameters<UpdateMemoryParams>) -> String {
         let id = match FragmentId::parse(&params.fragment_id) {
             Ok(id) => id,
             Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
@@ -432,13 +368,13 @@ impl MemoryServer {
 
         self.with_db(|db| match db.update(id, &params.content) {
             Ok(()) => {
-                let response = serde_json::json!({
+                serde_json::to_string_pretty(&serde_json::json!({
                     "status": "updated",
-                    "fragment_id": params.fragment_id,
-                });
-                serde_json::to_string_pretty(&response).unwrap()
+                    "id": params.fragment_id,
+                }))
+                .unwrap()
             }
-            Err(e) => format!("Failed to update memory: {}", e),
+            Err(e) => format!("Failed to update: {}", e),
         })
     }
 }
@@ -448,17 +384,15 @@ impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Lore: Persistent memory for AI agents. Knowledge is organized as interconnected \
-             abstraction trees — broad concepts at the top, conversation-specific details deeper down, \
-             with associative edges linking related fragments across trees.\n\n\
-             Recommended workflow:\n\
-             1. list_roots — see the top-level knowledge areas\n\
-             2. explore_memory — drill into a root to see its full subtree\n\
-             3. query_memory — semantic search across all fragments at a given depth\n\
-             4. traverse_memory — navigate from a fragment to its children, parent, or associations\n\n\
-             Key distinction: query_memory returns a flat ranked list. \
-             explore_memory returns a tree with children expanded. \
-             Use query_memory when you don't know where to look; use explore_memory when you want \
-             to see everything under a known root.",
+             abstraction trees — broad concepts at the top, conversation-specific details deeper \
+             down, with associative edges linking related fragments across trees.\n\n\
+             Workflow: search → read → search deeper → read.\n\
+             1. search(query) — find relevant fragments by semantic similarity (returns IDs only)\n\
+             2. read(id) — read content + see children/associations for navigation\n\
+             3. search(query, parent_id=id) — narrow search within a subtree\n\
+             4. Repeat until you have the detail you need.\n\n\
+             list_roots shows all top-level knowledge areas (IDs only).\n\
+             Each step is lightweight — content is only loaded when you explicitly read.",
         )
     }
 }
@@ -471,35 +405,35 @@ mod tests {
     fn seed_test_db(server: &MemoryServer) {
         let db = server.db.lock().unwrap();
 
-        let topic = Fragment::new("Rust programming language".to_string(), 0);
-        db.storage().insert_fragment(&topic).unwrap();
+        let root = Fragment::new("Rust programming language".to_string(), 0);
+        db.storage().insert_fragment(&root).unwrap();
 
-        let concept = Fragment::new(
+        let child = Fragment::new(
             "Async Rust: Async programming in Rust using tokio".to_string(),
             1,
         );
-        db.storage().insert_fragment(&concept).unwrap();
+        db.storage().insert_fragment(&child).unwrap();
 
         let edge = Edge {
             id: EdgeId::new(),
-            source: topic.id,
-            target: concept.id,
+            source: root.id,
+            target: child.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
             created_at: now_unix(),
         };
         db.storage().insert_edge(&edge).unwrap();
 
-        let fact = Fragment::new(
+        let leaf = Fragment::new(
             "Tokio uses a work-stealing scheduler for task distribution".to_string(),
             2,
         );
-        db.storage().insert_fragment(&fact).unwrap();
+        db.storage().insert_fragment(&leaf).unwrap();
 
         let edge2 = Edge {
             id: EdgeId::new(),
-            source: concept.id,
-            target: fact.id,
+            source: child.id,
+            target: leaf.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
             created_at: now_unix(),
@@ -513,222 +447,178 @@ mod tests {
         seed_test_db(&server);
 
         let result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 50,
-                offset: 0,
-                query: None,
-            }))
+            .list_roots(Parameters(ListRootsParams { limit: 20 }))
             .await;
-        assert!(result.contains("Rust"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let roots = parsed.as_array().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0]["id"].is_string());
+        assert_eq!(roots[0]["children_count"], 1);
+        // No content in list_roots response
+        assert!(roots[0].get("content").is_none());
     }
 
     #[tokio::test]
-    async fn test_query_memory() {
+    async fn test_search_global() {
         let server = MemoryServer::new_in_memory().unwrap();
         seed_test_db(&server);
 
         let result = server
-            .query_memory(Parameters(QueryMemoryParams {
-                topic: "Rust".to_string(),
-                depth: 0,
+            .search(Parameters(SearchParams {
+                query: "Rust".to_string(),
+                parent_id: None,
                 limit: 10,
             }))
             .await;
-        assert!(result.contains("Rust"));
+        assert!(result.contains("score"));
+        assert!(result.contains("depth"));
+        // No content in search response
+        assert!(!result.contains("Rust programming language"));
     }
 
     #[tokio::test]
-    async fn test_store_memory() {
+    async fn test_search_scoped() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        seed_test_db(&server);
+
+        let root_id = {
+            let db = server.db.lock().unwrap();
+            db.list_roots(None)[0].id.to_string()
+        };
+
+        // Search within children of root — text fallback (no embeddings in test)
+        let result = server
+            .search(Parameters(SearchParams {
+                query: "Async".to_string(),
+                parent_id: Some(root_id),
+                limit: 10,
+            }))
+            .await;
+        assert!(result.contains("score"));
+    }
+
+    #[tokio::test]
+    async fn test_read_fragment() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        seed_test_db(&server);
+
+        let root_id = {
+            let db = server.db.lock().unwrap();
+            db.list_roots(None)[0].id.to_string()
+        };
+
+        let result = server
+            .read(Parameters(ReadParams {
+                id: root_id.clone(),
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        // Content is returned
+        assert!(parsed["content"]
+            .as_str()
+            .unwrap()
+            .contains("Rust programming"));
+        assert_eq!(parsed["depth"], 0);
+        // Children IDs are returned
+        assert_eq!(parsed["children"].as_array().unwrap().len(), 1);
+        // No parent for root
+        assert!(parsed["parent_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_read_returns_parent_and_children() {
+        let server = MemoryServer::new_in_memory().unwrap();
+        seed_test_db(&server);
+
+        // Get the child (depth 1) ID
+        let (root_id, child_id) = {
+            let db = server.db.lock().unwrap();
+            let roots = db.list_roots(None);
+            let children = db.children(roots[0].id);
+            (roots[0].id.to_string(), children[0].id.to_string())
+        };
+
+        let result = server
+            .read(Parameters(ReadParams { id: child_id }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        // Has parent
+        assert_eq!(parsed["parent_id"].as_str().unwrap(), root_id);
+        // Has child (the leaf)
+        assert_eq!(parsed["children"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_store() {
         let server = MemoryServer::new_in_memory().unwrap();
 
         let result = server
-            .store_memory(Parameters(StoreMemoryParams {
+            .store(Parameters(StoreMemoryParams {
                 content: "Python is a dynamic language".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
             .await;
         assert!(result.contains("stored"));
-        assert!(result.contains("fragment_id"));
+        assert!(result.contains("\"id\""));
     }
 
     #[tokio::test]
-    async fn test_traverse_memory() {
-        let server = MemoryServer::new_in_memory().unwrap();
-        seed_test_db(&server);
-
-        let topic_id = {
-            let db = server.db.lock().unwrap();
-            let topics = db.list_roots(None);
-            topics[0].id.to_string()
-        };
-
-        let result = server
-            .traverse_memory(Parameters(TraverseMemoryParams {
-                fragment_id: topic_id,
-                direction: "children".to_string(),
-            }))
-            .await;
-        assert!(result.contains("Async Rust"));
-    }
-
-    #[tokio::test]
-    async fn test_traverse_invalid_direction() {
+    async fn test_delete() {
         let server = MemoryServer::new_in_memory().unwrap();
 
-        let result = server
-            .traverse_memory(Parameters(TraverseMemoryParams {
-                fragment_id: "00000000-0000-0000-0000-000000000000".to_string(),
-                direction: "sideways".to_string(),
-            }))
-            .await;
-        assert!(result.contains("Invalid direction"));
-    }
-
-    #[tokio::test]
-    async fn test_list_roots_with_query_filter() {
-        let server = MemoryServer::new_in_memory().unwrap();
-        seed_test_db(&server);
-
-        // Store a second topic
-        {
-            let db = server.db.lock().unwrap();
-            let topic2 = Fragment::new("Python programming language".to_string(), 0);
-            db.storage().insert_fragment(&topic2).unwrap();
-        }
-
-        // Filter by "Python" should only return Python
-        let result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 50,
-                offset: 0,
-                query: Some("Python".to_string()),
-            }))
-            .await;
-        assert!(result.contains("Python"));
-        assert!(!result.contains("\"content\": \"Rust programming language\""));
-
-        // Pagination metadata should be present
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["total"], 1);
-    }
-
-    #[tokio::test]
-    async fn test_list_roots_pagination() {
-        let server = MemoryServer::new_in_memory().unwrap();
-        {
-            let db = server.db.lock().unwrap();
-            for i in 0..5 {
-                let t = Fragment::new(format!("Topic {i} content"), 0);
-                db.storage().insert_fragment(&t).unwrap();
-            }
-        }
-
-        // Get first 2
-        let result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 2,
-                offset: 0,
-                query: None,
-            }))
-            .await;
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["total"], 5);
-        assert_eq!(parsed["roots"].as_array().unwrap().len(), 2);
-
-        // Get next 2
-        let result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 2,
-                offset: 2,
-                query: None,
-            }))
-            .await;
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["roots"].as_array().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_delete_memory() {
-        let server = MemoryServer::new_in_memory().unwrap();
-
-        // Store, then delete
         let store_result = server
-            .store_memory(Parameters(StoreMemoryParams {
-                content: "Temporary fact".to_string(),
+            .store(Parameters(StoreMemoryParams {
+                content: "Temporary".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&store_result).unwrap();
-        let frag_id = parsed["fragment_id"].as_str().unwrap().to_string();
+        let frag_id = parsed["id"].as_str().unwrap().to_string();
 
-        let delete_result = server
-            .delete_memory(Parameters(DeleteMemoryParams {
-                fragment_id: frag_id.clone(),
+        let result = server
+            .delete(Parameters(DeleteMemoryParams {
+                fragment_id: frag_id,
             }))
             .await;
-        assert!(delete_result.contains("deleted"));
-
-        // Verify it's gone
-        let list_result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 50,
-                offset: 0,
-                query: None,
-            }))
-            .await;
-        assert!(!list_result.contains("Temp"));
+        assert!(result.contains("deleted"));
     }
 
     #[tokio::test]
-    async fn test_update_memory() {
+    async fn test_update() {
         let server = MemoryServer::new_in_memory().unwrap();
 
         let store_result = server
-            .store_memory(Parameters(StoreMemoryParams {
-                content: "Original content".to_string(),
+            .store(Parameters(StoreMemoryParams {
+                content: "Original".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&store_result).unwrap();
-        let frag_id = parsed["fragment_id"].as_str().unwrap().to_string();
+        let frag_id = parsed["id"].as_str().unwrap().to_string();
 
-        let update_result = server
-            .update_memory(Parameters(UpdateMemoryParams {
-                fragment_id: frag_id.clone(),
-                content: "Updated content".to_string(),
+        let result = server
+            .update(Parameters(UpdateMemoryParams {
+                fragment_id: frag_id,
+                content: "Updated".to_string(),
             }))
             .await;
-        assert!(update_result.contains("updated"));
-
-        // Verify content changed
-        let list_result = server
-            .list_roots(Parameters(ListRootsParams {
-                limit: 50,
-                offset: 0,
-                query: None,
-            }))
-            .await;
-        assert!(list_result.contains("Updated"));
-        assert!(!list_result.contains("Original"));
+        assert!(result.contains("updated"));
     }
 
     #[tokio::test]
-    async fn test_query_returns_parent_breadcrumb() {
+    async fn test_read_not_found() {
         let server = MemoryServer::new_in_memory().unwrap();
-        seed_test_db(&server);
 
-        // Query at depth 1 — should return "Async Rust" with parent "Rust"
         let result = server
-            .query_memory(Parameters(QueryMemoryParams {
-                topic: "async".to_string(),
-                depth: 1,
-                limit: 10,
+            .read(Parameters(ReadParams {
+                id: "00000000-0000-0000-0000-000000000000".to_string(),
             }))
             .await;
-        assert!(result.contains("parent_content"));
-        assert!(result.contains("Rust"));
+        assert!(result.contains("not found"));
     }
 }

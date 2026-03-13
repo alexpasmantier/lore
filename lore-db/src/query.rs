@@ -271,7 +271,7 @@ impl LoreDb {
 
     /// Reinforce a fragment on access: update relevance score and spread activation
     /// to neighbors. This is the reconsolidation-on-recall mechanism.
-    fn reinforce_on_access(&self, id: FragmentId) {
+    pub fn reinforce_on_access(&self, id: FragmentId) {
         let now = now_unix();
 
         // Load the fragment to compute new relevance
@@ -309,7 +309,7 @@ impl LoreDb {
     }
 
     /// Generate an embedding for text, returning None if no embedder is available.
-    fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
+    pub fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
         self.embedder.as_ref().and_then(|e| e.embed(text).ok())
     }
 

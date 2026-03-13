@@ -141,11 +141,14 @@ The context menu shows the current version and status, and provides controls to:
 
 | Tool | Description |
 |------|-------------|
-| `query_memory` | Search at a given depth. `limit` controls result count (default 10). |
-| `explore_memory` | Subtree view of a knowledge area. `limit` controls how many trees (default 3). |
-| `traverse_memory` | Navigate children, parent, or associations of a fragment. |
-| `store_memory` | Explicitly store a piece of knowledge. |
-| `list_roots` | List root-level fragments (highest abstraction), sorted by relevance. Optional `limit`. |
+| `search` | Semantic search. Returns IDs and scores only — no content. Optional `parent_id` to scope to a subtree. |
+| `read` | Read a fragment's content + its children/association IDs for navigation. |
+| `list_roots` | List root-level fragment IDs and child counts. |
+| `store` | Store a piece of knowledge with content, optional parent, and depth. |
+| `update` | Update a fragment's content (embedding recomputed). |
+| `delete` | Remove a fragment and its edges. |
+
+Workflow: `search` → `read` → `search(parent_id=...)` → `read` → repeat until sufficient detail.
 
 ### Daemon CLI
 
