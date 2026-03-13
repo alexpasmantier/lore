@@ -62,10 +62,43 @@ pub struct ExistingRootContext {
     pub children_content: Vec<String>,
 }
 
+/// Session context passed to the extraction prompt.
+pub struct SessionContext {
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+}
+
+impl SessionContext {
+    /// Derive project name from cwd (last path component).
+    pub fn project_name(&self) -> Option<&str> {
+        self.cwd
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .and_then(|n| n.to_str())
+    }
+}
+
 /// Build the extraction prompt, including existing root context so Claude can
 /// augment existing roots rather than creating duplicates.
-fn build_extraction_prompt(existing_roots: &[ExistingRootContext]) -> String {
-    let mut prompt = String::from(
+fn build_extraction_prompt(
+    existing_roots: &[ExistingRootContext],
+    session: Option<&SessionContext>,
+) -> String {
+    let mut prompt = String::new();
+
+    // Add session context if available
+    if let Some(ctx) = session {
+        prompt.push_str("## Session context\n\n");
+        if let Some(ref cwd) = ctx.cwd {
+            prompt.push_str(&format!("- Project: {}\n", cwd));
+        }
+        if let Some(ref branch) = ctx.git_branch {
+            prompt.push_str(&format!("- Git branch: {}\n", branch));
+        }
+        prompt.push('\n');
+    }
+
+    prompt.push_str(
         r#"Extract only the **most valuable** knowledge from this conversation into a zoom-tree structure. Be highly selective — only extract information that would be useful to recall in a future conversation. Most conversations contain only 1-3 genuinely memorable insights; some contain none.
 
 ## What to extract
@@ -166,10 +199,11 @@ pub async fn extract_knowledge(
     client: &ClaudeClient,
     turns: &[ConversationTurn],
     existing_roots: &[ExistingRootContext],
+    session: Option<&SessionContext>,
 ) -> Result<ExtractedKnowledge, Box<dyn std::error::Error>> {
     let conversation_text = format_conversation_batch(turns);
     let boundary = generate_boundary(&conversation_text);
-    let extraction_prompt = build_extraction_prompt(existing_roots);
+    let extraction_prompt = build_extraction_prompt(existing_roots, session);
     let prompt = format!(
         "{}<data-{}>\n{}\n</data-{}>\n\nRespond with ONLY the JSON object. No markdown, no explanation, no prose.",
         extraction_prompt, boundary, conversation_text, boundary
@@ -390,9 +424,10 @@ mod tests {
 
     #[test]
     fn test_build_extraction_prompt_no_roots() {
-        let prompt = build_extraction_prompt(&[]);
+        let prompt = build_extraction_prompt(&[], None);
         assert!(prompt.contains("zoom-tree"));
         assert!(!prompt.contains("Existing Roots"));
+        assert!(!prompt.contains("Session context"));
     }
 
     #[test]
@@ -409,10 +444,22 @@ mod tests {
                 children_content: vec!["Data science".to_string()],
             },
         ];
-        let prompt = build_extraction_prompt(&roots);
+        let prompt = build_extraction_prompt(&roots, None);
         assert!(prompt.contains("Existing Roots"));
         assert!(prompt.contains("id-1"));
         assert!(prompt.contains("Rust"));
         assert!(prompt.contains("Data science"));
+    }
+
+    #[test]
+    fn test_build_extraction_prompt_with_session_context() {
+        let ctx = SessionContext {
+            cwd: Some("/Users/alex/code/rust/lore".to_string()),
+            git_branch: Some("main".to_string()),
+        };
+        let prompt = build_extraction_prompt(&[], Some(&ctx));
+        assert!(prompt.contains("Session context"));
+        assert!(prompt.contains("/Users/alex/code/rust/lore"));
+        assert!(prompt.contains("main"));
     }
 }

@@ -7,6 +7,38 @@ pub struct ConversationTurn {
     pub text: String,
 }
 
+/// Metadata about a conversation session extracted from JSONL lines.
+#[derive(Debug, Clone, Default)]
+pub struct SessionMetadata {
+    /// Working directory (project path)
+    pub cwd: Option<String>,
+    /// Git branch active during the conversation
+    pub git_branch: Option<String>,
+}
+
+/// Extract session metadata (cwd, gitBranch) from a JSONL line.
+/// Call on each line — returns Some on the first line that has the fields.
+pub fn parse_session_metadata(line: &str) -> Option<SessionMetadata> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    let obj = value.as_object()?;
+
+    let cwd = obj.get("cwd").and_then(|v| v.as_str()).map(String::from);
+    let git_branch = obj
+        .get("gitBranch")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    if cwd.is_some() || git_branch.is_some() {
+        Some(SessionMetadata { cwd, git_branch })
+    } else {
+        None
+    }
+}
+
 /// Parse a JSONL line from a Claude Code conversation log.
 /// Returns None if the line should be skipped (tool calls, empty, etc.)
 pub fn parse_jsonl_line(line: &str) -> Option<ConversationTurn> {
@@ -81,6 +113,22 @@ fn truncate(s: &str, max_len: usize) -> &str {
         }
         &s[..end]
     }
+}
+
+/// Read session metadata from a JSONL file (scans first 5 lines).
+pub fn read_session_metadata(file_path: &str) -> SessionMetadata {
+    let file = match std::fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return SessionMetadata::default(),
+    };
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    for line in reader.lines().take(5).flatten() {
+        if let Some(meta) = parse_session_metadata(&line) {
+            return meta;
+        }
+    }
+    SessionMetadata::default()
 }
 
 /// Format a batch of conversation turns into a string suitable for the extraction prompt.

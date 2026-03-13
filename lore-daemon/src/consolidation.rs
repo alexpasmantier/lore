@@ -132,7 +132,14 @@ async fn phase0_digest_staged(
 
         tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
 
-        // Derive session ID from file path (same as old ingestion)
+        // Read session metadata from the JSONL file
+        let meta = crate::parser::read_session_metadata(&session.file_path);
+        let session_ctx = ingestion::SessionContext {
+            cwd: meta.cwd,
+            git_branch: meta.git_branch,
+        };
+
+        // Derive session ID from file path
         let session_id = std::path::Path::new(&session.file_path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -160,7 +167,9 @@ async fn phase0_digest_staged(
         };
 
         for chunk in &chunks {
-            match ingestion::extract_knowledge(client, chunk, &existing_roots).await {
+            match ingestion::extract_knowledge(client, chunk, &existing_roots, Some(&session_ctx))
+                .await
+            {
                 Ok(knowledge) => {
                     match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
                         Ok(count) => {
