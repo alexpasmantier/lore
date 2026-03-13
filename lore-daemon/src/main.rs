@@ -52,6 +52,35 @@ enum Command {
         #[arg(short, long)]
         follow: bool,
     },
+    /// List top-level topics
+    Topics {
+        /// Max topics to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+        /// Filter by keyword
+        query: Option<String>,
+    },
+    /// Semantic search across fragments
+    Query {
+        /// Search text
+        topic: String,
+        /// Depth level to search (0=topics, 1=concepts, etc.)
+        #[arg(short, long, default_value = "0")]
+        depth: u32,
+        /// Max results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+    /// Show the subtree rooted at a fragment
+    Explore {
+        /// Fragment ID (or prefix)
+        id: String,
+        /// Max tree depth to show
+        #[arg(short, long, default_value = "3")]
+        depth: u32,
+    },
+    /// Show what's in the staging area
+    Staged,
 }
 
 fn lore_home() -> PathBuf {
@@ -114,6 +143,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Ingest => run_single_ingest(config).await?,
         Command::Consolidate => run_single_consolidation(config).await?,
         Command::Logs { lines, follow } => tail_logs(lines, follow)?,
+        Command::Topics { limit, query } => cli_topics(config, limit, query.as_deref())?,
+        Command::Query {
+            topic,
+            depth,
+            limit,
+        } => cli_query(config, &topic, depth, limit)?,
+        Command::Explore { id, depth } => cli_explore(config, &id, depth)?,
+        Command::Staged => cli_staged(config)?,
     }
 
     Ok(())
@@ -367,6 +404,187 @@ fn tail_logs(lines: usize, follow: bool) -> Result<(), Box<dyn std::error::Error
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CLI query commands
+// ---------------------------------------------------------------------------
+
+fn open_db(config: &Config) -> Result<LoreDb, Box<dyn std::error::Error>> {
+    let storage = Storage::open(&config.db_path())?;
+    Ok(LoreDb::new(storage))
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
+fn cli_topics(
+    config: Config,
+    limit: usize,
+    query: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = open_db(&config)?;
+    let mut topics = db.list_topics(query);
+    topics.truncate(limit);
+
+    if topics.is_empty() {
+        println!("No topics found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<38} {:>5} {:>5}  Content",
+        "ID", "Rel", "Acc"
+    );
+    println!("{}", "-".repeat(100));
+    for t in &topics {
+        let children = db.children(t.id).len();
+        let content_preview = truncate(&t.content, 60);
+        println!(
+            "{:<38} {:.2}  {:>4}  {} {}",
+            t.id,
+            t.relevance_score,
+            t.access_count,
+            content_preview,
+            if children > 0 {
+                format!("[{children} children]")
+            } else {
+                String::new()
+            }
+        );
+    }
+    println!("\n{} topics", topics.len());
+    Ok(())
+}
+
+fn cli_query(
+    config: Config,
+    topic: &str,
+    depth: u32,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = open_db(&config)?;
+    let results = db.query(topic, depth, limit);
+
+    if results.is_empty() {
+        println!("No results for \"{}\" at depth {}.", topic, depth);
+        return Ok(());
+    }
+
+    for (i, sf) in results.iter().enumerate() {
+        let f = &sf.fragment;
+        println!(
+            "{}. [score={:.3} rel={:.3}] (depth={}) {}",
+            i + 1,
+            sf.score,
+            f.relevance_score,
+            f.depth,
+            f.id
+        );
+        println!("   {}", f.content);
+        if let Some(parent) = db.parent(f.id) {
+            println!("   <- parent: {}", truncate(&parent.content, 60));
+        }
+        println!();
+    }
+    Ok(())
+}
+
+fn cli_explore(
+    config: Config,
+    id_prefix: &str,
+    max_depth: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = open_db(&config)?;
+
+    // Support ID prefix matching
+    let id = if id_prefix.len() < 36 {
+        let topics = db.list_topics(None);
+        let all_frags: Vec<_> = topics
+            .iter()
+            .filter(|f| f.id.to_string().starts_with(id_prefix))
+            .collect();
+        match all_frags.len() {
+            0 => {
+                println!("No fragment found matching prefix \"{}\"", id_prefix);
+                return Ok(());
+            }
+            1 => all_frags[0].id,
+            n => {
+                println!("Ambiguous prefix \"{}\" matches {} fragments:", id_prefix, n);
+                for f in &all_frags {
+                    println!("  {} - {}", f.id, truncate(&f.content, 60));
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        lore_db::FragmentId::parse(id_prefix)?
+    };
+
+    let tree = db.subtree(id, max_depth);
+    match tree {
+        Some(tree) => print_tree(&tree, 0),
+        None => println!("Fragment {} not found.", id_prefix),
+    }
+    Ok(())
+}
+
+fn print_tree(tree: &lore_db::Tree, indent: usize) {
+    let prefix = "  ".repeat(indent);
+    let f = &tree.fragment;
+    println!(
+        "{}{} (depth={}, rel={:.2})",
+        prefix, f.id, f.depth, f.relevance_score
+    );
+    println!("{}  {}", prefix, f.content);
+    for child in &tree.children {
+        print_tree(child, indent + 1);
+    }
+}
+
+fn cli_staged(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    let db = open_db(&config)?;
+    let now = lore_db::fragment::now_unix();
+    let sessions = db.storage().get_staged_sessions(0, now + 1)?;
+
+    if sessions.is_empty() {
+        println!("No staged conversations.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<70} {:>6} {:>8}",
+        "Session", "Turns", "Age"
+    );
+    println!("{}", "-".repeat(90));
+    let mut total_turns = 0;
+    for s in &sessions {
+        let age_secs = now - s.last_staged;
+        let age = if age_secs < 60 {
+            format!("{age_secs}s")
+        } else if age_secs < 3600 {
+            format!("{}m", age_secs / 60)
+        } else {
+            format!("{}h", age_secs / 3600)
+        };
+        let name = std::path::Path::new(&s.file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&s.file_path);
+        println!("{:<70} {:>6} {:>8}", name, s.turn_count, age);
+        total_turns += s.turn_count;
+    }
+    println!(
+        "\n{} sessions, {} total turns",
+        sessions.len(),
+        total_turns
+    );
     Ok(())
 }
 
