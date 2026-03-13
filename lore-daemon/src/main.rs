@@ -101,15 +101,26 @@ fn config_path(raw: &str) -> PathBuf {
     PathBuf::from(expanded)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // Fast-path: commands that don't need tracing, tokio, or the DB
+    match &cli.command {
+        Command::Status => return show_status(),
+        Command::Stop => return stop_daemon(),
+        Command::Logs { lines, follow } => return tail_logs(*lines, *follow),
+        Command::Daemonize => {
+            let config = Config::load(&config_path(&cli.config))?;
+            return daemonize(config);
+        }
+        _ => {}
+    }
+
+    // Initialize tracing for commands that need it
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive("lore_daemon=info".parse().unwrap())
         .add_directive("lore=info".parse().unwrap());
 
-    // If `start --log-file` is used, write tracing to that file instead of stderr
     let log_file_path = match &cli.command {
         Command::Start { log_file } => log_file.clone(),
         _ => None,
@@ -134,23 +145,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::load(&config_path(&cli.config))?;
 
-    match cli.command {
-        Command::Start { .. } => run_foreground(config).await?,
-        Command::Daemonize => daemonize(config)?,
-        Command::Stop => stop_daemon()?,
-        Command::Status => show_status()?,
-        Command::Ingest => run_single_ingest(config).await?,
-        Command::Consolidate => run_single_consolidation(config).await?,
-        Command::Logs { lines, follow } => tail_logs(lines, follow)?,
-        Command::Roots { limit, query } => cli_roots(config, limit, query.as_deref())?,
-        Command::Query {
-            topic,
-            depth,
-            limit,
-        } => cli_query(config, &topic, depth, limit)?,
-        Command::Explore { id, depth } => cli_explore(config, &id, depth)?,
-        Command::Staged => cli_staged(config)?,
+    // Commands that need the DB but not tokio
+    match &cli.command {
+        Command::Roots { limit, query } => return cli_roots(config, *limit, query.as_deref()),
+        Command::Explore { id, depth } => return cli_explore(config, id, *depth),
+        Command::Staged => return cli_staged(config),
+        _ => {}
     }
+
+    // Commands that need the tokio runtime
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            match cli.command {
+                Command::Start { .. } => run_foreground(config).await?,
+                Command::Ingest => run_single_ingest(config).await?,
+                Command::Consolidate => run_single_consolidation(config).await?,
+                Command::Query {
+                    topic,
+                    depth,
+                    limit,
+                } => cli_query(config, &topic, depth, limit)?,
+                _ => unreachable!(),
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })?;
 
     Ok(())
 }
@@ -351,34 +371,38 @@ fn stop_daemon() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn show_status() -> Result<(), Box<dyn std::error::Error>> {
-    let pid_path = pid_file();
-    if !pid_path.exists() {
-        println!("Daemon: not running");
-        return Ok(());
-    }
-
-    let pid_str = std::fs::read_to_string(&pid_path)?;
-    let pid: i32 = pid_str.trim().parse()?;
-
-    // Check if process is actually running
-    let running = unsafe { libc::kill(pid, 0) } == 0;
-
-    if running {
-        let activity = match status::read_status() {
-            Some(s) if s.pid == pid as u32 => match s.state {
+    // Check status file first (covers both daemon and single-pass commands)
+    if let Some(s) = status::read_status() {
+        let pid = s.pid as i32;
+        let alive = pid > 0 && unsafe { libc::kill(pid, 0) } == 0;
+        if alive {
+            let state = match s.state {
                 DaemonState::Idle => "idle",
                 DaemonState::Ingesting => "ingesting",
                 DaemonState::Consolidating => "consolidating",
-            },
-            _ => "unknown",
-        };
-        println!("Daemon: running (PID: {}, state: {})", pid, activity);
-    } else {
-        println!("Daemon: stale PID file (PID: {} not running)", pid);
-        let _ = std::fs::remove_file(&pid_path);
-        status::clear_status();
+            };
+            println!("Lore: running (PID: {}, state: {})", s.pid, state);
+            return Ok(());
+        }
     }
 
+    // Check PID file as fallback (daemon may be starting up)
+    let pid_path = pid_file();
+    if pid_path.exists() {
+        let pid_str = std::fs::read_to_string(&pid_path)?;
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            let alive = pid > 0 && unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                println!("Lore: running (PID: {})", pid);
+                return Ok(());
+            }
+            // Stale PID file
+            let _ = std::fs::remove_file(&pid_path);
+            status::clear_status();
+        }
+    }
+
+    println!("Lore: not running");
     Ok(())
 }
 
