@@ -9,7 +9,7 @@ use lore_daemon::claude_client::ClaudeClient;
 use lore_daemon::config::Config;
 use lore_daemon::status::{self, DaemonState};
 use lore_daemon::watcher::FileWatcher;
-use lore_daemon::{consolidation, ingestion};
+use lore_daemon::consolidation;
 
 #[derive(Parser)]
 #[command(
@@ -157,7 +157,6 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     // Run ingestion and consolidation loops concurrently
     let ingestion_interval = Duration::from_secs(config.ingestion.poll_interval_secs);
     let consolidation_interval = Duration::from_secs(config.consolidation.interval_secs);
-    let batch_size = config.ingestion.batch_size;
     let consolidation_config = config.consolidation.clone();
 
     // Handle shutdown gracefully
@@ -175,7 +174,7 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
         tokio::select! {
             _ = ingestion_timer.tick() => {
                 status::write_status(DaemonState::Ingesting);
-                if let Err(e) = run_ingestion_pass(&db, &watcher, &client, batch_size).await {
+                if let Err(e) = run_ingestion_pass(&db, &watcher) {
                     tracing::error!("Ingestion error: {}", e);
                 }
                 status::write_status(DaemonState::Idle);
@@ -205,108 +204,32 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// Max concurrent Claude calls during ingestion.
-const INGESTION_CONCURRENCY: usize = 4;
-
-/// Max files to process per ingestion pass (avoids hour-long first runs).
-const MAX_FILES_PER_PASS: usize = 10;
-
-async fn run_ingestion_pass(
+/// Stage new conversation turns into the database for later digestion.
+/// No Claude API calls — just file I/O and SQLite writes.
+fn run_ingestion_pass(
     db: &LoreDb,
     watcher: &FileWatcher,
-    client: &ClaudeClient,
-    batch_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let files = watcher.find_conversation_files();
     tracing::debug!("Found {} conversation files", files.len());
 
-    // Process files one at a time so results are stored incrementally.
-    // This means partial progress is preserved if the daemon is stopped,
-    // and topics appear in the DB as soon as a file is processed.
-    let mut files_processed = 0;
-
     for file_path in &files {
-        if files_processed >= MAX_FILES_PER_PASS {
-            tracing::info!(
-                "Reached per-pass file limit ({}), remaining files will be processed next pass",
-                MAX_FILES_PER_PASS
-            );
-            break;
-        }
-
         let (turns, new_offset) = watcher.read_new_turns(file_path, db.storage())?;
 
         if turns.is_empty() {
             continue;
         }
 
-        tracing::info!(
-            "Processing {} new turns from {}",
-            turns.len(),
-            file_path.display()
-        );
-
-        let session_id = file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
-
-        let chunks: Vec<Vec<_>> = turns.chunks(batch_size).map(|c| c.to_vec()).collect();
-
-        // Refresh existing topics for each file so newly stored topics are visible
-        let existing_topics: Vec<ingestion::ExistingTopicContext> = db
-            .list_topics(None)
-            .into_iter()
-            .map(|t| {
-                let children_summaries = db
-                    .children(t.id)
-                    .into_iter()
-                    .map(|c| c.summary)
-                    .collect();
-                ingestion::ExistingTopicContext {
-                    id: t.id.to_string(),
-                    summary: t.summary.clone(),
-                    content: t.content.clone(),
-                    children_summaries,
-                }
-            })
+        let file_str = file_path.to_string_lossy();
+        let turn_tuples: Vec<(&str, &str)> = turns
+            .iter()
+            .map(|t| (t.role.as_str(), t.text.as_str()))
             .collect();
 
-        // Process chunks with bounded concurrency, storing results as they arrive
-        use futures::stream::{self, StreamExt};
+        let staged = db.storage().stage_turns(&file_str, &turn_tuples)?;
+        db.storage().set_watermark(&file_str, new_offset)?;
 
-        let mut stream = stream::iter(chunks.iter().enumerate().map(|(chunk_idx, chunk)| {
-            let chunk = chunk.clone();
-            let topics = existing_topics.clone();
-            async move {
-                let result = ingestion::extract_knowledge(client, &chunk, &topics).await;
-                (chunk_idx, result)
-            }
-        }))
-        .buffer_unordered(INGESTION_CONCURRENCY);
-
-        while let Some((_chunk_idx, result)) = stream.next().await {
-            match result {
-                Ok(knowledge) => {
-                    match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
-                        Ok(count) => tracing::info!("Stored {} fragments from batch", count),
-                        Err(e) => tracing::error!("Storage failed (continuing): {}", e),
-                    }
-                }
-                Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
-            }
-        }
-
-        // Update watermark immediately after processing this file
-        db.storage()
-            .set_watermark(&file_path.to_string_lossy(), new_offset)?;
-        files_processed += 1;
-        tracing::info!(
-            "Completed file {}/{} this pass: {}",
-            files_processed,
-            MAX_FILES_PER_PASS,
-            file_path.display()
-        );
+        tracing::info!("Staged {} turns from {}", staged, file_path.display());
     }
 
     Ok(())
@@ -319,16 +242,10 @@ async fn run_single_ingest(config: Config) -> Result<(), Box<dyn std::error::Err
     }
     let storage = Storage::open(&db_path)?;
     let db = LoreDb::new(storage);
-
-    let client = ClaudeClient::auto(
-        &config.claude.api_key_env,
-        config.ingestion.claude_model.clone(),
-    );
-
     let watcher = FileWatcher::new();
 
     status::write_status(status::DaemonState::Ingesting);
-    let result = run_ingestion_pass(&db, &watcher, &client, config.ingestion.batch_size).await;
+    let result = run_ingestion_pass(&db, &watcher);
     status::write_status(status::DaemonState::Idle);
     result?;
     tracing::info!("Single ingestion pass complete.");

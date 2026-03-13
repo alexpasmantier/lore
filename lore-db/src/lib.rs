@@ -20,4 +20,4 @@ pub use embedding::{cosine_similarity, Embedder};
 pub use fragment::{Fragment, FragmentId, ScoredFragment, Tree};
 pub use query::LoreDb;
 pub use relevance::{compute_relevance, SEMANTIC_WEIGHT};
-pub use storage::Storage;
+pub use storage::{StagedSession, StagedTurn, Storage};

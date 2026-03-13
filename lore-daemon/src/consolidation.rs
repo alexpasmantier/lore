@@ -3,6 +3,8 @@ use lore_db::{cosine_similarity, EdgeKind, Fragment, FragmentId, LoreDb};
 
 use crate::claude_client::ClaudeClient;
 use crate::config::ConsolidationConfig;
+use crate::ingestion;
+use crate::parser::ConversationTurn;
 
 /// Run all consolidation phases.
 pub async fn run_consolidation(
@@ -15,58 +17,67 @@ pub async fn run_consolidation(
 
     tracing::info!("Starting consolidation...");
 
-    // Phase 0: Decay recomputation — the "sleep cycle"
-    // Recompute relevance scores for all fragments based on time decay
+    // Phase 0: Digest staged conversations into knowledge fragments
+    if let Some(client) = client {
+        let (sessions, fragments) =
+            phase0_digest_staged(db, client, config).await?;
+        stats.sessions_digested = sessions;
+        stats.fragments_extracted = fragments;
+        tracing::info!(
+            "Phase 0: Digested {} sessions, extracted {} fragments",
+            sessions, fragments
+        );
+    }
+
+    // Phase 1: Decay recomputation — the "sleep cycle"
     stats.relevance_updated = db.storage().recompute_all_relevance(now)?;
     tracing::info!(
-        "Phase 0: Recomputed relevance for {} fragments",
+        "Phase 1: Recomputed relevance for {} fragments",
         stats.relevance_updated
     );
 
-    // Phase 1: Similarity detection + topic merging
+    // Phase 2: Similarity detection + topic merging
     let similar_pairs = phase1_similarity_detection(db, config.similarity_threshold);
-    tracing::info!("Phase 1: Found {} similar topic pairs", similar_pairs.len());
+    tracing::info!("Phase 2: Found {} similar topic pairs", similar_pairs.len());
 
-    // Merge highly similar topics
     stats.topics_merged = phase1_topic_merging(db, &similar_pairs, config.merge_threshold)?;
-    tracing::info!("Phase 1: Merged {} topic pairs", stats.topics_merged);
+    tracing::info!("Phase 2: Merged {} topic pairs", stats.topics_merged);
 
-    // Phase 2: Create associative links between related concepts
-    // Re-detect after merging since some pairs may have been merged
+    // Phase 3: Create associative links between related concepts
     let similar_pairs = if stats.topics_merged > 0 {
         phase1_similarity_detection(db, config.similarity_threshold)
     } else {
         similar_pairs
     };
     stats.links_created = phase2_link_creation(db, &similar_pairs)?;
-    tracing::info!("Phase 2: Created {} associative links", stats.links_created);
+    tracing::info!("Phase 3: Created {} associative links", stats.links_created);
 
-    // Phase 3: Re-summarization of topics with modified children
+    // Phase 4: Re-summarization of topics with modified children
     if let Some(client) = client {
         stats.topics_resummarized = phase3_resummarization(db, client).await?;
         tracing::info!(
-            "Phase 3: Re-summarized {} topics",
+            "Phase 4: Re-summarized {} topics",
             stats.topics_resummarized
         );
 
-        // Phase 4: Contradiction resolution
+        // Phase 5: Contradiction resolution
         stats.contradictions_resolved = phase4_contradiction_resolution(db, client).await?;
         tracing::info!(
-            "Phase 4: Resolved {} contradictions",
+            "Phase 5: Resolved {} contradictions",
             stats.contradictions_resolved
         );
     } else {
-        tracing::info!("Phase 3-4: Skipped (no API key)");
+        tracing::info!("Phase 4-5: Skipped (no API key)");
     }
 
-    // Phase 5: Edge pruning (with decay)
+    // Phase 6: Edge pruning (with decay)
     stats.edges_pruned = phase5_pruning(db, config)?;
-    tracing::info!("Phase 5: Pruned {} weak edges", stats.edges_pruned);
+    tracing::info!("Phase 6: Pruned {} weak edges", stats.edges_pruned);
 
-    // Phase 6: Fragment pruning by relevance — true forgetting
+    // Phase 7: Fragment pruning by relevance — true forgetting
     stats.fragments_pruned = phase6_fragment_pruning(db, config, now)?;
     tracing::info!(
-        "Phase 6: Pruned {} low-relevance fragments",
+        "Phase 7: Pruned {} low-relevance fragments",
         stats.fragments_pruned
     );
 
@@ -76,6 +87,8 @@ pub async fn run_consolidation(
 
 #[derive(Debug, Default)]
 pub struct ConsolidationStats {
+    pub sessions_digested: usize,
+    pub fragments_extracted: usize,
     pub relevance_updated: usize,
     pub topics_merged: usize,
     pub links_created: usize,
@@ -83,6 +96,101 @@ pub struct ConsolidationStats {
     pub contradictions_resolved: usize,
     pub edges_pruned: usize,
     pub fragments_pruned: usize,
+}
+
+/// Max sessions to digest per consolidation run.
+const MAX_SESSIONS_PER_CONSOLIDATION: usize = 10;
+
+/// Phase 0: Digest staged conversation turns into knowledge fragments.
+async fn phase0_digest_staged(
+    db: &LoreDb,
+    client: &ClaudeClient,
+    config: &ConsolidationConfig,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let now = now_unix();
+    let sessions = db
+        .storage()
+        .get_staged_sessions(config.idle_threshold_secs, now)?;
+
+    if sessions.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let mut total_sessions = 0;
+    let mut total_fragments = 0;
+
+    for session in sessions.iter().take(MAX_SESSIONS_PER_CONSOLIDATION) {
+        let staged_turns = db.storage().get_staged_turns(&session.file_path)?;
+        if staged_turns.is_empty() {
+            continue;
+        }
+
+        let turns: Vec<ConversationTurn> = staged_turns
+            .iter()
+            .map(|t| ConversationTurn {
+                role: t.role.clone(),
+                text: t.text.clone(),
+            })
+            .collect();
+
+        tracing::info!(
+            "Digesting {} turns from {}",
+            turns.len(),
+            session.file_path
+        );
+
+        // Derive session ID from file path (same as old ingestion)
+        let session_id = std::path::Path::new(&session.file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+
+        // Build existing topic context
+        let existing_topics: Vec<ingestion::ExistingTopicContext> = db
+            .list_topics(None)
+            .into_iter()
+            .map(|t| {
+                let children_summaries =
+                    db.children(t.id).into_iter().map(|c| c.summary).collect();
+                ingestion::ExistingTopicContext {
+                    id: t.id.to_string(),
+                    summary: t.summary.clone(),
+                    content: t.content.clone(),
+                    children_summaries,
+                }
+            })
+            .collect();
+
+        // Chunk large conversations
+        let chunks: Vec<&[ConversationTurn]> =
+            if turns.len() > config.max_turns_per_extraction {
+                turns
+                    .chunks(config.max_turns_per_extraction)
+                    .collect()
+            } else {
+                vec![&turns]
+            };
+
+        for chunk in &chunks {
+            match ingestion::extract_knowledge(client, chunk, &existing_topics).await {
+                Ok(knowledge) => {
+                    match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
+                        Ok(count) => {
+                            total_fragments += count;
+                            tracing::info!("Stored {} fragments", count);
+                        }
+                        Err(e) => tracing::error!("Storage failed (continuing): {}", e),
+                    }
+                }
+                Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
+            }
+        }
+
+        db.storage().delete_staged_turns(&session.file_path)?;
+        total_sessions += 1;
+    }
+
+    Ok((total_sessions, total_fragments))
 }
 
 /// Phase 1: Find pairs of L0 topics with high semantic similarity.

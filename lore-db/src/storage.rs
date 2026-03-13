@@ -82,6 +82,15 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+
+            CREATE TABLE IF NOT EXISTS staged_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                staged_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_staged_file ON staged_turns(file_path);
             ",
         )?;
 
@@ -519,10 +528,91 @@ impl Storage {
         Ok(())
     }
 
+    // ──── Staged turns ────
+
+    /// Insert raw conversation turns into the staging table.
+    pub fn stage_turns(&self, file_path: &str, turns: &[(&str, &str)]) -> rusqlite::Result<usize> {
+        let now = now_unix();
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+        for (role, text) in turns {
+            tx.execute(
+                "INSERT INTO staged_turns (file_path, role, text, staged_at) VALUES (?1, ?2, ?3, ?4)",
+                params![file_path, role, text, now],
+            )?;
+            count += 1;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Return sessions whose most recent staged turn is older than the idle threshold.
+    pub fn get_staged_sessions(
+        &self,
+        idle_threshold_secs: i64,
+        now: i64,
+    ) -> rusqlite::Result<Vec<StagedSession>> {
+        let cutoff = now - idle_threshold_secs;
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, MAX(staged_at) as last_staged, COUNT(*) as turn_count
+             FROM staged_turns
+             GROUP BY file_path
+             HAVING MAX(staged_at) < ?1
+             ORDER BY last_staged ASC",
+        )?;
+        let sessions = stmt
+            .query_map(params![cutoff], |row| {
+                Ok(StagedSession {
+                    file_path: row.get(0)?,
+                    last_staged: row.get(1)?,
+                    turn_count: row.get::<_, usize>(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(sessions)
+    }
+
+    /// Get all staged turns for a session, ordered by insertion.
+    pub fn get_staged_turns(&self, file_path: &str) -> rusqlite::Result<Vec<StagedTurn>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, text FROM staged_turns WHERE file_path = ?1 ORDER BY id ASC",
+        )?;
+        let turns = stmt
+            .query_map(params![file_path], |row| {
+                Ok(StagedTurn {
+                    id: row.get(0)?,
+                    role: row.get(1)?,
+                    text: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(turns)
+    }
+
+    /// Delete all staged turns for a session after digestion.
+    pub fn delete_staged_turns(&self, file_path: &str) -> rusqlite::Result<usize> {
+        self.conn
+            .execute("DELETE FROM staged_turns WHERE file_path = ?1", params![file_path])
+    }
+
     /// Get a reference to the underlying connection (for transactions).
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// A conversation session with staged turns awaiting digestion.
+pub struct StagedSession {
+    pub file_path: String,
+    pub last_staged: i64,
+    pub turn_count: usize,
+}
+
+/// A single staged conversation turn.
+pub struct StagedTurn {
+    pub id: i64,
+    pub role: String,
+    pub text: String,
 }
 
 // ──── Helper functions ────
@@ -758,5 +848,59 @@ mod tests {
         storage.set_watermark("/some/file.jsonl", 2048).unwrap();
         let (offset, _) = storage.get_watermark("/some/file.jsonl").unwrap().unwrap();
         assert_eq!(offset, 2048);
+    }
+
+    #[test]
+    fn test_stage_and_retrieve_turns() {
+        let storage = Storage::open_memory().unwrap();
+
+        let turns = vec![
+            ("user", "Hello"),
+            ("assistant", "Hi there"),
+            ("user", "How does X work?"),
+        ];
+        let count = storage.stage_turns("/path/to/session.jsonl", &turns).unwrap();
+        assert_eq!(count, 3);
+
+        let retrieved = storage.get_staged_turns("/path/to/session.jsonl").unwrap();
+        assert_eq!(retrieved.len(), 3);
+        assert_eq!(retrieved[0].role, "user");
+        assert_eq!(retrieved[0].text, "Hello");
+        assert_eq!(retrieved[1].role, "assistant");
+        assert_eq!(retrieved[2].text, "How does X work?");
+    }
+
+    #[test]
+    fn test_staged_sessions_idle_threshold() {
+        let storage = Storage::open_memory().unwrap();
+        let now = now_unix();
+
+        // Stage turns for two sessions
+        storage.stage_turns("/idle.jsonl", &[("user", "old")]).unwrap();
+        storage.stage_turns("/active.jsonl", &[("user", "fresh")]).unwrap();
+
+        // Backdate the idle session
+        storage.conn().execute(
+            "UPDATE staged_turns SET staged_at = ?1 WHERE file_path = ?2",
+            params![now - 600, "/idle.jsonl"],
+        ).unwrap();
+
+        // With 300s threshold, only the idle session should be returned
+        let sessions = storage.get_staged_sessions(300, now).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].file_path, "/idle.jsonl");
+        assert_eq!(sessions[0].turn_count, 1);
+    }
+
+    #[test]
+    fn test_delete_staged_turns() {
+        let storage = Storage::open_memory().unwrap();
+
+        storage.stage_turns("/session.jsonl", &[("user", "hello"), ("assistant", "hi")]).unwrap();
+        assert_eq!(storage.get_staged_turns("/session.jsonl").unwrap().len(), 2);
+
+        let deleted = storage.delete_staged_turns("/session.jsonl").unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(storage.get_staged_turns("/session.jsonl").unwrap().len(), 0);
     }
 }

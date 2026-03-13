@@ -38,6 +38,12 @@ pub struct ConsolidationConfig {
     /// Minimum relevance score below which fragments may be pruned.
     #[serde(default = "default_min_relevance_prune")]
     pub min_relevance_prune: f32,
+    /// Seconds a session must be idle before staged turns are digested.
+    #[serde(default = "default_idle_threshold")]
+    pub idle_threshold_secs: i64,
+    /// Maximum turns to send in a single extraction call.
+    #[serde(default = "default_max_turns_per_extraction")]
+    pub max_turns_per_extraction: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +82,12 @@ fn default_prune_age_days() -> u32 {
 fn default_min_relevance_prune() -> f32 {
     0.02
 }
+fn default_idle_threshold() -> i64 {
+    300
+}
+fn default_max_turns_per_extraction() -> usize {
+    200
+}
 fn default_db_path() -> String {
     lore_db::lore_home()
         .join("memory.db")
@@ -104,6 +116,8 @@ impl Default for ConsolidationConfig {
             merge_threshold: default_merge_threshold(),
             prune_age_days: default_prune_age_days(),
             min_relevance_prune: default_min_relevance_prune(),
+            idle_threshold_secs: default_idle_threshold(),
+            max_turns_per_extraction: default_max_turns_per_extraction(),
         }
     }
 }
