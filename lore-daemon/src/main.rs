@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -26,7 +27,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the daemon in the foreground
-    Start,
+    Start {
+        /// Write logs to a file instead of stderr
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+    },
     /// Start the daemon in the background
     Daemonize,
     /// Stop a running daemon
@@ -37,11 +42,25 @@ enum Command {
     Ingest,
     /// Run a single consolidation pass
     Consolidate,
+    /// Tail the daemon log file
+    Logs {
+        /// Number of lines to show initially
+        #[arg(short, long, default_value = "50")]
+        lines: usize,
+        /// Follow the log output (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 fn pid_file() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".lore").join("daemon.pid")
+}
+
+fn log_file() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".lore").join("daemon.log")
 }
 
 fn config_path(raw: &str) -> PathBuf {
@@ -53,22 +72,43 @@ fn config_path(raw: &str) -> PathBuf {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("lore_daemon=info".parse().unwrap()),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("lore_daemon=info".parse().unwrap());
+
+    // If `start --log-file` is used, write tracing to that file instead of stderr
+    let log_file_path = match &cli.command {
+        Command::Start { log_file } => log_file.clone(),
+        _ => None,
+    };
+
+    if let Some(ref path) = log_file_path {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(Mutex::new(file))
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     let config = Config::load(&config_path(&cli.config))?;
 
     match cli.command {
-        Command::Start => run_foreground(config).await?,
+        Command::Start { .. } => run_foreground(config).await?,
         Command::Daemonize => daemonize(config)?,
         Command::Stop => stop_daemon()?,
         Command::Status => show_status()?,
         Command::Ingest => run_single_ingest(config).await?,
         Command::Consolidate => run_single_consolidation(config).await?,
+        Command::Logs { lines, follow } => tail_logs(lines, follow)?,
     }
 
     Ok(())
@@ -315,19 +355,25 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
 fn daemonize(_config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Fork a child process that runs the daemon
     let exe = std::env::current_exe()?;
-    let config_path = format!(
-        "{}/.lore/config.toml",
-        std::env::var("HOME").unwrap_or_default()
-    );
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config_path = format!("{}/.lore/config.toml", home);
+    let log_path = log_file();
 
     let child = std::process::Command::new(exe)
-        .args(["start", "--config", &config_path])
+        .args([
+            "--config",
+            &config_path,
+            "start",
+            "--log-file",
+            &log_path.to_string_lossy(),
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
 
     println!("Daemon started with PID: {}", child.id());
+    println!("Logs: {}", log_path.display());
     Ok(())
 }
 
@@ -371,6 +417,30 @@ fn show_status() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::remove_file(&pid_path);
     }
 
+    Ok(())
+}
+
+fn tail_logs(lines: usize, follow: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let path = log_file();
+    if !path.exists() {
+        println!("No log file found at {}", path.display());
+        println!("Start the daemon with `lore-daemon daemonize` first.");
+        return Ok(());
+    }
+
+    let mut args = vec!["-n".to_string(), lines.to_string()];
+    if follow {
+        args.push("-f".to_string());
+    }
+    args.push(path.to_string_lossy().into_owned());
+
+    let status = std::process::Command::new("tail")
+        .args(&args)
+        .status()?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
     Ok(())
 }
 
