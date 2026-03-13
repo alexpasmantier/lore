@@ -141,7 +141,12 @@ impl ClaudeClient {
     async fn complete_cli(model: &str, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         use tokio::io::AsyncWriteExt;
 
-        let mut child = tokio::process::Command::new("claude")
+        let claude_bin = dirs::home_dir()
+            .map(|h| h.join(".local/bin/claude"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| "claude".into());
+
+        let mut child = tokio::process::Command::new(claude_bin)
             .args([
                 "-p",
                 "--model",
