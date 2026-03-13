@@ -23,7 +23,6 @@ fn test_db() -> LoreDb {
 fn insert_fragment(
     db: &LoreDb,
     content: &str,
-    summary: &str,
     depth: u32,
     embedding: Vec<f32>,
     importance: f32,
@@ -34,7 +33,7 @@ fn insert_fragment(
     let now = now_unix();
     let created = now - age_days * 86400;
     let mut frag =
-        Fragment::new_with_importance(content.to_string(), summary.to_string(), depth, importance);
+        Fragment::new_with_importance(content.to_string(), depth, importance);
     frag.embedding = embedding;
     frag.created_at = created;
     frag.last_accessed = created;
@@ -132,9 +131,9 @@ fn batch_decay_recomputation_updates_all_fragments() {
     let now = now_unix();
 
     // Insert fragments with different ages
-    let id_fresh = insert_fragment(&db, "Fresh", "Fresh", 0, vec![], 0.5, 0, 0, None);
-    let id_old = insert_fragment(&db, "Old", "Old", 0, vec![], 0.5, 30, 0, None);
-    let id_ancient = insert_fragment(&db, "Ancient", "Ancient", 0, vec![], 0.5, 90, 0, None);
+    let id_fresh = insert_fragment(&db, "Fresh", 0, vec![], 0.5, 0, 0, None);
+    let id_old = insert_fragment(&db, "Old", 0, vec![], 0.5, 30, 0, None);
+    let id_ancient = insert_fragment(&db, "Ancient", 0, vec![], 0.5, 90, 0, None);
 
     // Run batch recomputation
     let updated = db.storage().recompute_all_relevance(now).unwrap();
@@ -170,7 +169,6 @@ fn accessing_a_memory_increases_relevance() {
     let id = insert_fragment(
         &db,
         "Some knowledge",
-        "Knowledge",
         0,
         vec![],
         0.5,
@@ -244,7 +242,7 @@ fn reinforcement_resets_decay_timer() {
     let now = now_unix();
 
     // Insert a 60-day old fragment
-    let id = insert_fragment(&db, "Old memory", "Old", 0, vec![], 0.5, 60, 0, None);
+    let id = insert_fragment(&db, "Old memory", 0, vec![], 0.5, 60, 0, None);
     let before = db.storage().get_fragment(id).unwrap().unwrap();
 
     // Reinforce it now
@@ -276,9 +274,9 @@ fn accessing_a_fragment_boosts_connected_neighbors() {
     let now = now_unix();
 
     // Create a topic with two children and an association
-    let topic_id = insert_fragment(&db, "Topic", "Topic", 0, vec![], 0.5, 10, 0, None);
-    let child_id = insert_fragment(&db, "Child", "Child", 1, vec![], 0.5, 10, 0, Some(topic_id));
-    let assoc_id = insert_fragment(&db, "Associated", "Assoc", 0, vec![], 0.5, 10, 0, None);
+    let topic_id = insert_fragment(&db, "Topic", 0, vec![], 0.5, 10, 0, None);
+    let child_id = insert_fragment(&db, "Child", 1, vec![], 0.5, 10, 0, Some(topic_id));
+    let assoc_id = insert_fragment(&db, "Associated", 0, vec![], 0.5, 10, 0, None);
     link(&db, topic_id, assoc_id, EdgeKind::Associative, 0.8);
 
     let child_before = db.storage().get_fragment(child_id).unwrap().unwrap();
@@ -312,7 +310,7 @@ fn boost_is_capped_at_one() {
     let now = now_unix();
 
     // Fresh fragment starts with relevance_score = 1.0
-    let id = insert_fragment(&db, "Fresh", "Fresh", 0, vec![], 1.0, 0, 10, None);
+    let id = insert_fragment(&db, "Fresh", 0, vec![], 1.0, 0, 10, None);
 
     // Try to boost past 1.0
     db.storage().boost_relevance(id, 0.5, now).unwrap();
@@ -389,7 +387,6 @@ fn importance_determines_decay_rate() {
 fn fragment_with_importance_gets_correct_decay_rate() {
     let frag = Fragment::new_with_importance(
         "Important decision".to_string(),
-        "Decision".to_string(),
         0,
         0.9,
     );
@@ -415,10 +412,10 @@ fn very_old_low_importance_fragments_are_candidates_for_pruning() {
     let now = now_unix();
 
     // Insert fragments with various ages and importances
-    let _fresh = insert_fragment(&db, "Fresh", "Fresh", 1, vec![], 0.5, 0, 0, None);
+    let _fresh = insert_fragment(&db, "Fresh", 1, vec![], 0.5, 0, 0, None);
     let _old_important =
-        insert_fragment(&db, "Old important", "OldImp", 1, vec![], 0.9, 90, 0, None);
-    let old_trivial = insert_fragment(&db, "Old trivial", "OldTriv", 1, vec![], 0.1, 90, 0, None);
+        insert_fragment(&db, "Old important", 1, vec![], 0.9, 90, 0, None);
+    let old_trivial = insert_fragment(&db, "Old trivial", 1, vec![], 0.1, 90, 0, None);
 
     // Recompute relevance
     db.storage().recompute_all_relevance(now).unwrap();
@@ -435,7 +432,7 @@ fn very_old_low_importance_fragments_are_candidates_for_pruning() {
         "Old trivial fragment should be a pruning candidate"
     );
     assert!(
-        !candidates.iter().any(|f| f.summary == "Fresh"),
+        !candidates.iter().any(|f| f.content == "Fresh"),
         "Fresh fragment should not be a candidate"
     );
 }
@@ -446,7 +443,7 @@ fn depth_zero_topics_are_never_pruning_candidates() {
     let now = now_unix();
 
     // Insert an old, low-importance depth-0 topic
-    let _topic = insert_fragment(&db, "Old topic", "OldTopic", 0, vec![], 0.1, 120, 0, None);
+    let _topic = insert_fragment(&db, "Old topic", 0, vec![], 0.1, 120, 0, None);
 
     db.storage().recompute_all_relevance(now).unwrap();
 
@@ -466,8 +463,8 @@ fn superseded_fragments_are_excluded_from_pruning_candidates() {
     let db = test_db();
     let now = now_unix();
 
-    let old_id = insert_fragment(&db, "Old version", "Old", 1, vec![], 0.5, 90, 0, None);
-    let new_id = insert_fragment(&db, "New version", "New", 1, vec![], 0.5, 0, 0, None);
+    let old_id = insert_fragment(&db, "Old version", 1, vec![], 0.5, 90, 0, None);
+    let new_id = insert_fragment(&db, "New version", 1, vec![], 0.5, 0, 0, None);
     db.supersede(old_id, new_id).unwrap();
 
     let candidates = db
@@ -495,7 +492,6 @@ fn relevance_modulates_text_query_ordering() {
     let _stale = insert_fragment(
         &db,
         "Rust is a systems language",
-        "Old Rust",
         0,
         vec![],
         0.2,
@@ -506,7 +502,6 @@ fn relevance_modulates_text_query_ordering() {
     let _fresh = insert_fragment(
         &db,
         "Rust programming patterns",
-        "Fresh Rust",
         0,
         vec![],
         0.8,
@@ -535,8 +530,8 @@ fn relevance_modulates_text_query_ordering() {
 fn edge_weights_decay_over_consolidation_cycles() {
     let db = test_db();
 
-    let a = insert_fragment(&db, "A", "A", 0, vec![], 0.5, 0, 0, None);
-    let b = insert_fragment(&db, "B", "B", 0, vec![], 0.5, 0, 0, None);
+    let a = insert_fragment(&db, "A", 0, vec![], 0.5, 0, 0, None);
+    let b = insert_fragment(&db, "B", 0, vec![], 0.5, 0, 0, None);
     link(&db, a, b, EdgeKind::Associative, 1.0);
 
     // Simulate 5 consolidation cycles of 5% decay each
@@ -564,9 +559,9 @@ fn edge_weights_decay_over_consolidation_cycles() {
 fn weak_edges_are_pruned_at_threshold() {
     let db = test_db();
 
-    let a = insert_fragment(&db, "A", "A", 0, vec![], 0.5, 0, 0, None);
-    let b = insert_fragment(&db, "B", "B", 0, vec![], 0.5, 0, 0, None);
-    let c = insert_fragment(&db, "C", "C", 0, vec![], 0.5, 0, 0, None);
+    let a = insert_fragment(&db, "A", 0, vec![], 0.5, 0, 0, None);
+    let b = insert_fragment(&db, "B", 0, vec![], 0.5, 0, 0, None);
+    let c = insert_fragment(&db, "C", 0, vec![], 0.5, 0, 0, None);
 
     link(&db, a, b, EdgeKind::Associative, 0.5); // Strong enough
     link(&db, a, c, EdgeKind::Associative, 0.1); // Below threshold
@@ -589,8 +584,8 @@ fn weak_edges_are_pruned_at_threshold() {
 fn hierarchical_edges_are_not_affected_by_associative_decay() {
     let db = test_db();
 
-    let parent = insert_fragment(&db, "Parent", "Parent", 0, vec![], 0.5, 0, 0, None);
-    let _child = insert_fragment(&db, "Child", "Child", 1, vec![], 0.5, 0, 0, Some(parent));
+    let parent = insert_fragment(&db, "Parent", 0, vec![], 0.5, 0, 0, None);
+    let _child = insert_fragment(&db, "Child", 1, vec![], 0.5, 0, 0, Some(parent));
 
     // Decay associative edges
     db.storage()
@@ -613,10 +608,10 @@ fn hierarchical_edges_are_not_affected_by_associative_decay() {
 #[test]
 fn temporal_edges_connect_sequential_siblings() {
     let db = test_db();
-    let topic = insert_fragment(&db, "Topic", "Topic", 0, vec![], 0.5, 0, 0, None);
-    let child1 = insert_fragment(&db, "First", "First", 1, vec![], 0.5, 0, 0, Some(topic));
-    let child2 = insert_fragment(&db, "Second", "Second", 1, vec![], 0.5, 0, 0, Some(topic));
-    let child3 = insert_fragment(&db, "Third", "Third", 1, vec![], 0.5, 0, 0, Some(topic));
+    let topic = insert_fragment(&db, "Topic", 0, vec![], 0.5, 0, 0, None);
+    let child1 = insert_fragment(&db, "First", 1, vec![], 0.5, 0, 0, Some(topic));
+    let child2 = insert_fragment(&db, "Second", 1, vec![], 0.5, 0, 0, Some(topic));
+    let child3 = insert_fragment(&db, "Third", 1, vec![], 0.5, 0, 0, Some(topic));
 
     // Create temporal edges: 1→2→3
     link(&db, child1, child2, EdgeKind::Temporal, 1.0);
@@ -646,7 +641,7 @@ fn temporal_edges_connect_sequential_siblings() {
 
 #[test]
 fn new_fragments_have_correct_defaults() {
-    let frag = Fragment::new("Test".to_string(), "Test".to_string(), 0);
+    let frag = Fragment::new("Test".to_string(), 0);
     assert!(
         (frag.importance - 0.5).abs() < 1e-6,
         "Default importance should be 0.5"
@@ -668,7 +663,7 @@ fn migration_v2_columns_are_readable() {
     let storage = Storage::open_memory().unwrap();
     let db = LoreDb::new_without_embeddings(storage);
 
-    let frag = Fragment::new_with_importance("Test".to_string(), "Test".to_string(), 0, 0.9);
+    let frag = Fragment::new_with_importance("Test".to_string(), 0, 0.9);
     db.storage().insert_fragment(&frag).unwrap();
 
     let loaded = db.storage().get_fragment(frag.id).unwrap().unwrap();
@@ -690,7 +685,6 @@ fn query_reinforces_returned_fragments() {
 
     let mut frag = Fragment::new(
         "Rust async patterns".to_string(),
-        "Rust async".to_string(),
         0,
     );
     frag.embedding = vec![0.1; 384];
@@ -717,11 +711,11 @@ fn query_reinforces_returned_fragments() {
 fn superseded_fragments_dont_appear_in_queries() {
     let db = test_db();
 
-    let mut old = Fragment::new("Old info".to_string(), "Old".to_string(), 0);
+    let mut old = Fragment::new("Old info".to_string(), 0);
     old.embedding = vec![0.1; 384];
     db.storage().insert_fragment(&old).unwrap();
 
-    let mut new = Fragment::new("Updated info".to_string(), "New".to_string(), 0);
+    let mut new = Fragment::new("Updated info".to_string(), 0);
     new.embedding = vec![0.1; 384];
     db.storage().insert_fragment(&new).unwrap();
 
@@ -738,9 +732,9 @@ fn superseded_fragments_dont_appear_in_queries() {
 fn superseded_fragments_dont_appear_in_children() {
     let db = test_db();
 
-    let topic = insert_fragment(&db, "Topic", "Topic", 0, vec![], 0.5, 0, 0, None);
-    let old_child = insert_fragment(&db, "Old child", "Old", 1, vec![], 0.5, 0, 0, Some(topic));
-    let new_child = insert_fragment(&db, "New child", "New", 1, vec![], 0.5, 0, 0, Some(topic));
+    let topic = insert_fragment(&db, "Topic", 0, vec![], 0.5, 0, 0, None);
+    let old_child = insert_fragment(&db, "Old child", 1, vec![], 0.5, 0, 0, Some(topic));
+    let new_child = insert_fragment(&db, "New child", 1, vec![], 0.5, 0, 0, Some(topic));
 
     db.supersede(old_child, new_child).unwrap();
 
@@ -763,9 +757,9 @@ fn superseded_fragments_dont_appear_in_children() {
 fn pruning_a_node_removes_all_its_edges() {
     let db = test_db();
 
-    let topic = insert_fragment(&db, "Topic", "Topic", 0, vec![], 0.5, 0, 0, None);
-    let child = insert_fragment(&db, "Child", "Child", 1, vec![], 0.5, 0, 0, Some(topic));
-    let assoc = insert_fragment(&db, "Associated", "Assoc", 1, vec![], 0.5, 0, 0, None);
+    let topic = insert_fragment(&db, "Topic", 0, vec![], 0.5, 0, 0, None);
+    let child = insert_fragment(&db, "Child", 1, vec![], 0.5, 0, 0, Some(topic));
+    let assoc = insert_fragment(&db, "Associated", 1, vec![], 0.5, 0, 0, None);
     link(&db, child, assoc, EdgeKind::Associative, 0.8);
 
     // Verify edges exist
@@ -791,10 +785,10 @@ fn pruning_a_node_removes_all_its_edges() {
 fn subtree_respects_max_depth() {
     let db = test_db();
 
-    let l0 = insert_fragment(&db, "L0", "L0", 0, vec![], 0.5, 0, 0, None);
-    let l1 = insert_fragment(&db, "L1", "L1", 1, vec![], 0.5, 0, 0, Some(l0));
-    let l2 = insert_fragment(&db, "L2", "L2", 2, vec![], 0.5, 0, 0, Some(l1));
-    let _l3 = insert_fragment(&db, "L3", "L3", 3, vec![], 0.5, 0, 0, Some(l2));
+    let l0 = insert_fragment(&db, "L0", 0, vec![], 0.5, 0, 0, None);
+    let l1 = insert_fragment(&db, "L1", 1, vec![], 0.5, 0, 0, Some(l0));
+    let l2 = insert_fragment(&db, "L2", 2, vec![], 0.5, 0, 0, Some(l1));
+    let _l3 = insert_fragment(&db, "L3", 3, vec![], 0.5, 0, 0, Some(l2));
 
     let tree = db.subtree(l0, 2).unwrap();
     assert_eq!(tree.children.len(), 1); // L1
@@ -816,7 +810,6 @@ fn lifecycle_fresh_memory_ages_and_can_be_rescued_by_access() {
     let id = insert_fragment(
         &db,
         "Important architectural decision about async runtime",
-        "Async decision",
         0,
         vec![],
         0.5,
@@ -906,7 +899,6 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
     let _id1 = insert_fragment(
         &db,
         "Use SQLite WAL mode for concurrent access",
-        "SQLite WAL decision",
         0,
         vec![],
         0.9,
@@ -919,7 +911,6 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
     let _id2 = insert_fragment(
         &db,
         "Rust error handling with thiserror + anyhow",
-        "Error handling pattern",
         0,
         vec![],
         0.5,
@@ -932,7 +923,6 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
     let _id3 = insert_fragment(
         &db,
         "The CI pipeline takes about 3 minutes",
-        "CI timing",
         0,
         vec![],
         0.1,
@@ -945,7 +935,6 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
     let _id4 = insert_fragment(
         &db,
         "User prefers concise responses",
-        "Response style",
         0,
         vec![],
         0.3,
@@ -961,13 +950,13 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
 
     // The recent important decision should rank first
     assert_eq!(
-        topics[0].summary, "SQLite WAL decision",
+        topics[0].content, "Use SQLite WAL mode for concurrent access",
         "Recent important memory should rank first"
     );
 
     // The old trivial observation should rank last
     assert_eq!(
-        topics[3].summary, "CI timing",
+        topics[3].content, "The CI pipeline takes about 3 minutes",
         "Old trivial memory should rank last"
     );
 }

@@ -55,16 +55,14 @@ fn extraction_rust_errors() -> ExtractedKnowledge {
     ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: None,
-            summary: "Rust error handling architecture".to_string(),
-            content: "For library code, use thiserror to define structured error types with \
+            content: "Rust error handling architecture: For library code, use thiserror to define structured error types with \
                       specific variants callers can match on. For application code, use anyhow \
                       for ergonomic error propagation. The choice depends on whether callers \
                       need to match on specific error variants."
                 .to_string(),
             importance: "high".to_string(),
             children: vec![ExtractedNode {
-                summary: "thiserror gotchas for library authors".to_string(),
-                content: "Three key gotchas: (1) Don't expose third-party error types in \
+                content: "thiserror gotchas for library authors: Three key gotchas: (1) Don't expose third-party error types in \
                           public API — creates semver coupling. (2) Be careful with #[from] — \
                           can create ambiguous From impls. (3) Box large error variants to \
                           avoid inflating Result size."
@@ -80,16 +78,14 @@ fn extraction_debugging() -> ExtractedKnowledge {
     ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: None,
-            summary: "RefCell vs Mutex usage".to_string(),
-            content: "User correction: Don't use Mutex for single-threaded code. RefCell is \
+            content: "RefCell vs Mutex usage: User correction: Don't use Mutex for single-threaded code. RefCell is \
                       appropriate for single-threaded interior mutability. When encountering \
                       BorrowMutError, restructure borrows to avoid overlapping immutable and \
                       mutable borrows."
                 .to_string(),
             importance: "high".to_string(),
             children: vec![ExtractedNode {
-                summary: "RefCell BorrowMutError debugging".to_string(),
-                content: "Classic pitfall: RefCell runtime borrow checking can cause \
+                content: "RefCell BorrowMutError debugging: Classic pitfall: RefCell runtime borrow checking can cause \
                           BorrowMutError when immutable and mutable borrows overlap. Fix by \
                           scoping borrows or dropping the immutable borrow before taking a \
                           mutable one."
@@ -105,16 +101,14 @@ fn extraction_async_patterns() -> ExtractedKnowledge {
     ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: None,
-            summary: "Tokio graceful shutdown pattern".to_string(),
-            content: "Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
+            content: "Tokio graceful shutdown pattern: Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
                       Main loop selects on work and shutdown signal. Finish current work items \
                       but stop accepting new ones."
                 .to_string(),
             importance: "medium".to_string(),
             children: vec![
                 ExtractedNode {
-                    summary: "CancellationToken for long tasks".to_string(),
-                    content: "For long-running tasks, pass a CancellationToken and check it \
+                    content: "CancellationToken for long tasks: For long-running tasks, pass a CancellationToken and check it \
                               periodically. Never use task::abort() — it can leave resources \
                               in an inconsistent state."
                         .to_string(),
@@ -122,8 +116,7 @@ fn extraction_async_patterns() -> ExtractedKnowledge {
                     children: vec![],
                 },
                 ExtractedNode {
-                    summary: "Shutdown signal handling".to_string(),
-                    content: "Use tokio::select! to multiplex work and shutdown signals. \
+                    content: "Shutdown signal handling: Use tokio::select! to multiplex work and shutdown signals. \
                               The watch channel pattern ensures all tasks see the shutdown \
                               notification without polling."
                         .to_string(),
@@ -377,7 +370,7 @@ fn high_importance_memories_survive_months() {
     let topics_before = db.list_topics(None);
     let high_imp_topic = topics_before
         .iter()
-        .find(|t| t.summary == "Rust error handling architecture")
+        .find(|t| t.content.contains("Rust error handling architecture"))
         .unwrap();
     let initial_relevance = high_imp_topic.relevance_score;
 
@@ -388,7 +381,7 @@ fn high_importance_memories_survive_months() {
     let topics_after = db.list_topics(None);
     let high_imp_after = topics_after
         .iter()
-        .find(|t| t.summary == "Rust error handling architecture")
+        .find(|t| t.content.contains("Rust error handling architecture"))
         .unwrap();
 
     // High importance (0.9) should still be above the visibility threshold
@@ -419,7 +412,7 @@ fn low_importance_children_fade_over_time() {
     let children = db.children(topics[0].id);
     let low_child = children
         .iter()
-        .find(|c| c.summary == "Shutdown signal handling")
+        .find(|c| c.content.contains("Shutdown signal handling"))
         .unwrap();
     assert!(
         (low_child.importance - 0.2).abs() < 0.01,
@@ -440,7 +433,7 @@ fn low_importance_children_fade_over_time() {
     // Medium importance sibling should still be somewhat visible
     let med_child = children
         .iter()
-        .find(|c| c.summary == "CancellationToken for long tasks")
+        .find(|c| c.content.contains("CancellationToken for long tasks"))
         .unwrap();
     let med_after = db.storage().get_fragment(med_child.id).unwrap().unwrap();
     assert!(
@@ -467,7 +460,7 @@ fn access_rescues_a_fading_memory() {
     let topic = db
         .list_topics(None)
         .into_iter()
-        .find(|t| t.summary == "Tokio graceful shutdown pattern")
+        .find(|t| t.content.contains("Tokio graceful shutdown pattern"))
         .unwrap();
     let relevance_at_60d = topic.relevance_score;
 
@@ -532,7 +525,7 @@ fn query_reinforces_and_spreads_activation() {
     let topics = db.list_topics(None);
     let rust_topic = topics
         .iter()
-        .find(|t| t.summary == "Rust error handling architecture")
+        .find(|t| t.content.contains("Rust error handling architecture"))
         .unwrap();
     let children = db.children(rust_topic.id);
     let child = &children[0]; // thiserror gotchas
@@ -581,11 +574,11 @@ fn associative_links_propagate_activation() {
     let topics = db.list_topics(None);
     let rust_topic = topics
         .iter()
-        .find(|t| t.summary == "Rust error handling architecture")
+        .find(|t| t.content.contains("Rust error handling architecture"))
         .unwrap();
     let refcell_topic = topics
         .iter()
-        .find(|t| t.summary == "RefCell vs Mutex usage")
+        .find(|t| t.content.contains("RefCell vs Mutex usage"))
         .unwrap();
 
     db.link(rust_topic.id, refcell_topic.id, EdgeKind::Associative, 0.7)
@@ -635,14 +628,12 @@ fn existing_topic_is_augmented_not_duplicated() {
     let augmentation = ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: Some(topic_id.to_string()),
-            summary: "Rust error handling (updated)".to_string(),
             content: "Updated: thiserror for libraries, anyhow for apps. Also consider \
                       miette for user-facing error reports with source annotations."
                 .to_string(),
             importance: "high".to_string(),
             children: vec![ExtractedNode {
-                summary: "miette for user-facing errors".to_string(),
-                content: "miette provides fancy error reporting with source code annotations, \
+                content: "miette for user-facing errors: miette provides fancy error reporting with source code annotations, \
                           useful for CLI tools and compilers."
                     .to_string(),
                 importance: "medium".to_string(),
@@ -682,7 +673,6 @@ fn hallucinated_topic_id_creates_new_topic() {
     let knowledge = ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
-            summary: "Nonexistent topic".to_string(),
             content: "This references a topic ID that doesn't exist.".to_string(),
             importance: "medium".to_string(),
             children: vec![],
@@ -732,7 +722,6 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
     // Insert a low-importance child that's very old
     let topic = Fragment::new_with_importance(
         "Topic that stays".to_string(),
-        "Durable topic".to_string(),
         0,
         0.5,
     );
@@ -740,7 +729,6 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
 
     let mut old_child = Fragment::new_with_importance(
         "Old trivial detail".to_string(),
-        "Old trivial".to_string(),
         1,
         0.02, // near-zero importance → floor = 0.006, below pruning threshold of 0.02
     );
@@ -762,7 +750,6 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
     // Also insert a fresh child that should survive
     let fresh_child = Fragment::new_with_importance(
         "Fresh important detail".to_string(),
-        "Fresh important".to_string(),
         1,
         0.9,
     );
@@ -813,12 +800,11 @@ async fn pruned_fragments_children_are_reparented() {
     let now = now_unix();
 
     // Create: topic → middle_node → grandchild
-    let topic = Fragment::new_with_importance("Root topic".to_string(), "Root".to_string(), 0, 0.9);
+    let topic = Fragment::new_with_importance("Root topic".to_string(), 0, 0.9);
     db.insert(topic.clone(), None).unwrap();
 
     let mut middle = Fragment::new_with_importance(
         "Middle node that will be pruned".to_string(),
-        "Middle".to_string(),
         1,
         0.02, // near-zero importance → floor below pruning threshold
     );
@@ -834,7 +820,6 @@ async fn pruned_fragments_children_are_reparented() {
 
     let grandchild = Fragment::new_with_importance(
         "Grandchild should be reparented".to_string(),
-        "Grandchild".to_string(),
         2,
         0.9, // high importance so it survives
     );
@@ -994,7 +979,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
         assert!(
             topic.relevance_score > MIN_RELEVANCE_THRESHOLD,
             "At 30 days, all topics should still be visible: {} has {}",
-            topic.summary,
+            topic.content,
             topic.relevance_score
         );
     }
@@ -1014,11 +999,11 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     let topics_at_60d = db.list_topics(None);
     let rust_at_60 = topics_at_60d
         .iter()
-        .find(|t| t.summary.contains("Rust"))
+        .find(|t| t.content.contains("Rust"))
         .unwrap();
     let tokio_at_60 = topics_at_60d
         .iter()
-        .find(|t| t.summary.contains("Tokio"))
+        .find(|t| t.content.contains("Tokio"))
         .unwrap();
 
     // Rust topic (high importance, recently accessed) should outrank
@@ -1046,7 +1031,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     let topics_at_90d = db.list_topics(None);
     let rust_at_90 = topics_at_90d
         .iter()
-        .find(|t| t.summary.contains("Rust"))
+        .find(|t| t.content.contains("Rust"))
         .unwrap();
     assert!(
         rust_at_90.relevance_score > MIN_RELEVANCE_THRESHOLD,
@@ -1056,9 +1041,9 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     // ── Verify the full ordering makes sense ──
     // Most relevant should be the recently-accessed, high-importance Rust topic
     assert!(
-        topics_at_90d[0].summary.contains("Rust") || topics_at_90d[0].summary.contains("RefCell"),
+        topics_at_90d[0].content.contains("Rust") || topics_at_90d[0].content.contains("RefCell"),
         "Top-ranked topic at 90 days should be one of the high-importance ones, got: {}",
-        topics_at_90d[0].summary
+        topics_at_90d[0].content
     );
 }
 
@@ -1126,8 +1111,7 @@ fn superseded_knowledge_is_invisible_but_retained() {
     let updated = ExtractedKnowledge {
         topics: vec![ExtractedTopicEntry {
             existing_id: None,
-            summary: "Rust error handling (revised)".to_string(),
-            content: "Use thiserror for all library AND binary crates for consistency. \
+            content: "Rust error handling (revised): Use thiserror for all library AND binary crates for consistency. \
                       Anyhow is no longer recommended due to opaque error types."
                 .to_string(),
             importance: "high".to_string(),
@@ -1139,7 +1123,7 @@ fn superseded_knowledge_is_invisible_but_retained() {
     let all_topics = db.list_topics(None);
     let new_topic = all_topics
         .iter()
-        .find(|t| t.summary.contains("revised"))
+        .find(|t| t.content.contains("revised"))
         .unwrap();
 
     // Supersede old with new
@@ -1180,22 +1164,19 @@ fn importance_levels_produce_correct_decay_behavior() {
         topics: vec![
             ExtractedTopicEntry {
                 existing_id: None,
-                summary: "Critical decision".to_string(),
-                content: "A critical architectural decision.".to_string(),
+                content: "Critical decision: A critical architectural decision.".to_string(),
                 importance: "high".to_string(),
                 children: vec![],
             },
             ExtractedTopicEntry {
                 existing_id: None,
-                summary: "Technical pattern".to_string(),
-                content: "A useful technical pattern.".to_string(),
+                content: "Technical pattern: A useful technical pattern.".to_string(),
                 importance: "medium".to_string(),
                 children: vec![],
             },
             ExtractedTopicEntry {
                 existing_id: None,
-                summary: "Routine observation".to_string(),
-                content: "A routine observation.".to_string(),
+                content: "Routine observation: A routine observation.".to_string(),
                 importance: "low".to_string(),
                 children: vec![],
             },
@@ -1208,15 +1189,15 @@ fn importance_levels_produce_correct_decay_behavior() {
     // Verify decay rates are set correctly
     let high = topics
         .iter()
-        .find(|t| t.summary == "Critical decision")
+        .find(|t| t.content.contains("Critical decision"))
         .unwrap();
     let med = topics
         .iter()
-        .find(|t| t.summary == "Technical pattern")
+        .find(|t| t.content.contains("Technical pattern"))
         .unwrap();
     let low = topics
         .iter()
-        .find(|t| t.summary == "Routine observation")
+        .find(|t| t.content.contains("Routine observation"))
         .unwrap();
 
     assert!(
@@ -1240,15 +1221,15 @@ fn importance_levels_produce_correct_decay_behavior() {
     let topics_60d = db.list_topics(None);
     let high_60 = topics_60d
         .iter()
-        .find(|t| t.summary == "Critical decision")
+        .find(|t| t.content.contains("Critical decision"))
         .unwrap();
     let med_60 = topics_60d
         .iter()
-        .find(|t| t.summary == "Technical pattern")
+        .find(|t| t.content.contains("Technical pattern"))
         .unwrap();
     let low_60 = topics_60d
         .iter()
-        .find(|t| t.summary == "Routine observation")
+        .find(|t| t.content.contains("Routine observation"))
         .unwrap();
 
     assert!(

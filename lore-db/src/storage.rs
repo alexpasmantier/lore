@@ -46,7 +46,6 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS fragments (
                 id TEXT PRIMARY KEY,
                 content TEXT NOT NULL,
-                summary TEXT NOT NULL,
                 depth INTEGER NOT NULL,
                 embedding BLOB,
                 created_at INTEGER NOT NULL,
@@ -144,14 +143,13 @@ impl Storage {
         let superseded_by = fragment.superseded_by.map(|id| id.as_str());
 
         self.conn.execute(
-            "INSERT INTO fragments (id, content, summary, depth, embedding, created_at,
+            "INSERT INTO fragments (id, content, depth, embedding, created_at,
              last_accessed, access_count, source_session, superseded_by, metadata,
              importance, relevance_score, decay_rate, last_reinforced)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 fragment.id.as_str(),
                 fragment.content,
-                fragment.summary,
                 fragment.depth,
                 embedding_blob,
                 fragment.created_at,
@@ -312,24 +310,23 @@ impl Storage {
         Ok(fragments)
     }
 
-    /// Update content, summary, and embedding of an existing fragment in-place.
+    /// Update content and embedding of an existing fragment in-place.
     pub fn update_fragment_content(
         &self,
         id: FragmentId,
         new_content: &str,
-        new_summary: &str,
         new_embedding: Option<&[f32]>,
     ) -> rusqlite::Result<()> {
         if let Some(emb) = new_embedding {
             let blob = embedding_to_bytes(emb);
             self.conn.execute(
-                "UPDATE fragments SET content = ?1, summary = ?2, embedding = ?3, last_accessed = ?4 WHERE id = ?5",
-                params![new_content, new_summary, blob, now_unix(), id.as_str()],
+                "UPDATE fragments SET content = ?1, embedding = ?2, last_accessed = ?3 WHERE id = ?4",
+                params![new_content, blob, now_unix(), id.as_str()],
             )?;
         } else {
             self.conn.execute(
-                "UPDATE fragments SET content = ?1, summary = ?2, last_accessed = ?3 WHERE id = ?4",
-                params![new_content, new_summary, now_unix(), id.as_str()],
+                "UPDATE fragments SET content = ?1, last_accessed = ?2 WHERE id = ?3",
+                params![new_content, now_unix(), id.as_str()],
             )?;
         }
         Ok(())
@@ -619,21 +616,21 @@ pub struct StagedTurn {
 
 /// Column list for fragment queries (no table prefix).
 const FRAGMENT_COLUMNS: &str =
-    "id, content, summary, depth, embedding, created_at, last_accessed, \
+    "id, content, depth, embedding, created_at, last_accessed, \
      access_count, source_session, superseded_by, metadata, \
      importance, relevance_score, decay_rate, last_reinforced";
 
 /// Column list for fragment queries (with f. table prefix for JOINs).
 const FRAGMENT_COLUMNS_PREFIXED: &str =
-    "f.id, f.content, f.summary, f.depth, f.embedding, f.created_at, f.last_accessed, \
+    "f.id, f.content, f.depth, f.embedding, f.created_at, f.last_accessed, \
      f.access_count, f.source_session, f.superseded_by, f.metadata, \
      f.importance, f.relevance_score, f.decay_rate, f.last_reinforced";
 
 fn row_to_fragment(row: &rusqlite::Row) -> rusqlite::Result<Fragment> {
     let id_str: String = row.get(0)?;
-    let embedding_blob: Option<Vec<u8>> = row.get(4)?;
-    let superseded_str: Option<String> = row.get(9)?;
-    let metadata_str: Option<String> = row.get(10)?;
+    let embedding_blob: Option<Vec<u8>> = row.get(3)?;
+    let superseded_str: Option<String> = row.get(8)?;
+    let metadata_str: Option<String> = row.get(9)?;
 
     let embedding = embedding_blob
         .map(|b| bytes_to_embedding(&b))
@@ -645,26 +642,25 @@ fn row_to_fragment(row: &rusqlite::Row) -> rusqlite::Result<Fragment> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let created_at: i64 = row.get(5)?;
-    let last_reinforced: Option<i64> = row.get(14).unwrap_or(None);
+    let created_at: i64 = row.get(4)?;
+    let last_reinforced: Option<i64> = row.get(13).unwrap_or(None);
 
     Ok(Fragment {
         id: FragmentId::parse(&id_str).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
         content: row.get(1)?,
-        summary: row.get(2)?,
-        depth: row.get::<_, u32>(3)?,
+        depth: row.get::<_, u32>(2)?,
         embedding,
         created_at,
-        last_accessed: row.get(6)?,
-        access_count: row.get::<_, u32>(7)?,
-        source_session: row.get(8)?,
+        last_accessed: row.get(5)?,
+        access_count: row.get::<_, u32>(6)?,
+        source_session: row.get(7)?,
         superseded_by,
         metadata,
-        importance: row.get::<_, f32>(11).unwrap_or(0.5),
-        relevance_score: row.get::<_, f32>(12).unwrap_or(1.0),
-        decay_rate: row.get::<_, f32>(13).unwrap_or(0.035),
+        importance: row.get::<_, f32>(10).unwrap_or(0.5),
+        relevance_score: row.get::<_, f32>(11).unwrap_or(1.0),
+        decay_rate: row.get::<_, f32>(12).unwrap_or(0.035),
         last_reinforced: last_reinforced.unwrap_or(created_at),
     })
 }
@@ -726,7 +722,6 @@ mod tests {
 
         let mut frag = Fragment::new(
             "Rust async programming".to_string(),
-            "Async Rust".to_string(),
             0,
         );
         frag.embedding = vec![1.0, 2.0, 3.0];
@@ -735,7 +730,6 @@ mod tests {
 
         let loaded = storage.get_fragment(frag.id).unwrap().unwrap();
         assert_eq!(loaded.content, "Rust async programming");
-        assert_eq!(loaded.summary, "Async Rust");
         assert_eq!(loaded.depth, 0);
         assert_eq!(loaded.embedding, vec![1.0, 2.0, 3.0]);
     }
@@ -744,8 +738,8 @@ mod tests {
     fn test_edge_crud() {
         let storage = Storage::open_memory().unwrap();
 
-        let parent = Fragment::new("Topic".to_string(), "Topic".to_string(), 0);
-        let child = Fragment::new("Concept".to_string(), "Concept".to_string(), 1);
+        let parent = Fragment::new("Topic".to_string(), 0);
+        let child = Fragment::new("Concept".to_string(), 1);
 
         storage.insert_fragment(&parent).unwrap();
         storage.insert_fragment(&child).unwrap();
@@ -774,7 +768,6 @@ mod tests {
 
         let mut frag = Fragment::new(
             "Original content".to_string(),
-            "Original summary".to_string(),
             0,
         );
         frag.embedding = vec![1.0, 2.0, 3.0];
@@ -786,24 +779,21 @@ mod tests {
             .update_fragment_content(
                 frag.id,
                 "Updated content",
-                "Updated summary",
                 Some(&new_emb),
             )
             .unwrap();
 
         let loaded = storage.get_fragment(frag.id).unwrap().unwrap();
         assert_eq!(loaded.content, "Updated content");
-        assert_eq!(loaded.summary, "Updated summary");
         assert_eq!(loaded.embedding, vec![4.0, 5.0, 6.0]);
 
         // Update without changing embedding
         storage
-            .update_fragment_content(frag.id, "Content v3", "Summary v3", None)
+            .update_fragment_content(frag.id, "Content v3", None)
             .unwrap();
 
         let loaded = storage.get_fragment(frag.id).unwrap().unwrap();
         assert_eq!(loaded.content, "Content v3");
-        assert_eq!(loaded.summary, "Summary v3");
         assert_eq!(loaded.embedding, vec![4.0, 5.0, 6.0]); // unchanged
     }
 
@@ -811,8 +801,8 @@ mod tests {
     fn test_delete_edge_between() {
         let storage = Storage::open_memory().unwrap();
 
-        let parent = Fragment::new("Topic".to_string(), "Topic".to_string(), 0);
-        let child = Fragment::new("Concept".to_string(), "Concept".to_string(), 1);
+        let parent = Fragment::new("Topic".to_string(), 0);
+        let child = Fragment::new("Concept".to_string(), 1);
         storage.insert_fragment(&parent).unwrap();
         storage.insert_fragment(&child).unwrap();
 

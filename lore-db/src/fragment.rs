@@ -34,17 +34,13 @@ impl std::fmt::Display for FragmentId {
 
 /// A unit of knowledge — like a neuron ensemble encoding a concept.
 ///
-/// Fragments are organized as zoom-trees where each level is a self-contained
-/// summary and children are drill-downs of their parent:
-/// - Depth 0: Topic overviews (rich, self-contained paragraphs)
-/// - Depth 1+: Progressively more detailed drill-downs
-///
-/// Each node is readable standalone; children elaborate on their parent's content.
+/// Fragments form trees of abstraction levels: higher nodes capture general
+/// concepts, deeper nodes stay closer to the specifics of the original
+/// conversation. Each node is a self-contained piece of knowledge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fragment {
     pub id: FragmentId,
     pub content: String,
-    pub summary: String,
     pub depth: u32,
     #[serde(skip)]
     pub embedding: Vec<f32>,
@@ -67,12 +63,11 @@ pub struct Fragment {
 }
 
 impl Fragment {
-    pub fn new(content: String, summary: String, depth: u32) -> Self {
+    pub fn new(content: String, depth: u32) -> Self {
         let now = now_unix();
         Self {
             id: FragmentId::new(),
             content,
-            summary,
             depth,
             embedding: Vec::new(),
             created_at: now,
@@ -90,13 +85,8 @@ impl Fragment {
 
     /// Create a fragment with a specific importance level.
     /// Automatically sets the decay rate based on importance.
-    pub fn new_with_importance(
-        content: String,
-        summary: String,
-        depth: u32,
-        importance: f32,
-    ) -> Self {
-        let mut frag = Self::new(content, summary, depth);
+    pub fn new_with_importance(content: String, depth: u32, importance: f32) -> Self {
+        let mut frag = Self::new(content, depth);
         frag.importance = importance.clamp(0.0, 1.0);
         frag.decay_rate = crate::relevance::decay_rate_for_importance(frag.importance);
         frag

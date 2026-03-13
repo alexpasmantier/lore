@@ -46,12 +46,10 @@ pub struct TraverseMemoryParams {
 pub struct StoreMemoryParams {
     /// The knowledge to store
     pub content: String,
-    /// One-line summary
-    pub summary: String,
     /// Parent fragment ID. If omitted for depth > 0, auto-assigns to the most
     /// semantically similar existing topic.
     pub parent_id: Option<String>,
-    /// Zoom level (0=topic overview, 1=concept, 2=fact, 3=detail)
+    /// Abstraction level (0=broad concept, higher=more specific)
     #[serde(default = "default_store_depth")]
     pub depth: u32,
 }
@@ -64,7 +62,7 @@ pub struct ListTopicsParams {
     /// Number of topics to skip (for pagination)
     #[serde(default)]
     pub offset: usize,
-    /// Optional keyword filter — only return topics whose summary or content matches
+    /// Optional keyword filter — only return topics whose content matches
     pub query: Option<String>,
 }
 
@@ -80,8 +78,6 @@ pub struct UpdateMemoryParams {
     pub fragment_id: String,
     /// New content (replaces existing)
     pub content: String,
-    /// New one-line summary (replaces existing)
-    pub summary: String,
 }
 
 fn default_depth() -> u32 {
@@ -108,24 +104,20 @@ fn default_list_limit() -> usize {
 #[derive(Serialize)]
 struct FragmentResponse {
     id: String,
-    summary: String,
     content: String,
     depth: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<f32>,
     relevance: f32,
-    /// Parent fragment ID (if this fragment has a parent in the hierarchy)
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_id: Option<String>,
-    /// Parent fragment summary (breadcrumb for context)
     #[serde(skip_serializing_if = "Option::is_none")]
-    parent_summary: Option<String>,
+    parent_content: Option<String>,
 }
 
 #[derive(Serialize)]
 struct TreeResponse {
     id: String,
-    summary: String,
     content: String,
     depth: u32,
     relevance: f32,
@@ -135,7 +127,6 @@ struct TreeResponse {
 #[derive(Serialize)]
 struct TopicResponse {
     id: String,
-    summary: String,
     content: String,
     child_count: usize,
     relevance: f32,
@@ -146,13 +137,12 @@ impl FragmentResponse {
         let parent = db.parent(f.id);
         Self {
             id: f.id.to_string(),
-            summary: f.summary.clone(),
             content: f.content.clone(),
             depth: f.depth,
             score,
             relevance: f.relevance_score,
             parent_id: parent.as_ref().map(|p| p.id.to_string()),
-            parent_summary: parent.as_ref().map(|p| p.summary.clone()),
+            parent_content: parent.as_ref().map(|p| p.content.clone()),
         }
     }
 }
@@ -161,7 +151,6 @@ impl TreeResponse {
     fn from_tree(tree: &Tree) -> Self {
         Self {
             id: tree.fragment.id.to_string(),
-            summary: tree.fragment.summary.clone(),
             content: tree.fragment.content.clone(),
             depth: tree.fragment.depth,
             relevance: tree.fragment.relevance_score,
@@ -311,7 +300,7 @@ impl MemoryServer {
     }
 
     /// Explicitly store a piece of knowledge in long-term memory. Provide the
-    /// knowledge, a summary, an optional parent topic ID, and depth level.
+    /// content, an optional parent ID, and depth level (0=broad concept, higher=more specific).
     /// If no parent_id is given and depth > 0, automatically assigns to the most
     /// semantically similar existing topic.
     #[tool(name = "store_memory")]
@@ -335,26 +324,17 @@ impl MemoryServer {
             };
 
             let auto_parented = explicit_parent.is_none() && parent_id.is_some();
-            let parent_summary = parent_id.and_then(|pid| {
-                db.parent(pid)
-                    .or_else(|| db.storage().get_fragment(pid).ok().flatten())
-                    .map(|f| f.summary.clone())
-            });
 
-            let fragment = Fragment::new(params.content, params.summary.clone(), params.depth);
+            let fragment = Fragment::new(params.content, params.depth);
             match db.insert(fragment, parent_id) {
                 Ok(id) => {
                     let mut response = serde_json::json!({
                         "status": "stored",
                         "fragment_id": id.to_string(),
-                        "summary": params.summary,
                         "depth": params.depth,
                     });
                     if let Some(pid) = parent_id {
                         response["parent_id"] = serde_json::json!(pid.to_string());
-                    }
-                    if let Some(ref ps) = parent_summary {
-                        response["parent_summary"] = serde_json::json!(ps);
                     }
                     if auto_parented {
                         response["auto_parented"] = serde_json::json!(true);
@@ -400,7 +380,6 @@ impl MemoryServer {
                     let child_count = db.children(t.id).len();
                     TopicResponse {
                         id: t.id.to_string(),
-                        summary: t.summary.clone(),
                         content: t.content.clone(),
                         child_count,
                         relevance: t.relevance_score,
@@ -442,7 +421,7 @@ impl MemoryServer {
         })
     }
 
-    /// Update the content and summary of an existing memory fragment.
+    /// Update the content of an existing memory fragment.
     /// The embedding is automatically recomputed.
     #[tool(name = "update_memory")]
     async fn update_memory(&self, Parameters(params): Parameters<UpdateMemoryParams>) -> String {
@@ -451,12 +430,11 @@ impl MemoryServer {
             Err(_) => return format!("Invalid fragment ID: {}", params.fragment_id),
         };
 
-        self.with_db(|db| match db.update(id, &params.content, &params.summary) {
+        self.with_db(|db| match db.update(id, &params.content) {
             Ok(()) => {
                 let response = serde_json::json!({
                     "status": "updated",
                     "fragment_id": params.fragment_id,
-                    "summary": params.summary,
                 });
                 serde_json::to_string_pretty(&response).unwrap()
             }
@@ -493,14 +471,12 @@ mod tests {
 
         let topic = Fragment::new(
             "Rust programming language".to_string(),
-            "Rust".to_string(),
             0,
         );
         db.storage().insert_fragment(&topic).unwrap();
 
         let concept = Fragment::new(
-            "Async programming in Rust using tokio".to_string(),
-            "Async Rust".to_string(),
+            "Async Rust: Async programming in Rust using tokio".to_string(),
             1,
         );
         db.storage().insert_fragment(&concept).unwrap();
@@ -517,7 +493,6 @@ mod tests {
 
         let fact = Fragment::new(
             "Tokio uses a work-stealing scheduler for task distribution".to_string(),
-            "Work-stealing scheduler".to_string(),
             2,
         );
         db.storage().insert_fragment(&fact).unwrap();
@@ -570,7 +545,6 @@ mod tests {
         let result = server
             .store_memory(Parameters(StoreMemoryParams {
                 content: "Python is a dynamic language".to_string(),
-                summary: "Python".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
@@ -622,7 +596,6 @@ mod tests {
             let db = server.db.lock().unwrap();
             let topic2 = Fragment::new(
                 "Python programming language".to_string(),
-                "Python".to_string(),
                 0,
             );
             db.storage().insert_fragment(&topic2).unwrap();
@@ -637,7 +610,7 @@ mod tests {
             }))
             .await;
         assert!(result.contains("Python"));
-        assert!(!result.contains("\"summary\": \"Rust\""));
+        assert!(!result.contains("\"content\": \"Rust programming language\""));
 
         // Pagination metadata should be present
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -652,7 +625,6 @@ mod tests {
             for i in 0..5 {
                 let t = Fragment::new(
                     format!("Topic {i} content"),
-                    format!("Topic {i}"),
                     0,
                 );
                 db.storage().insert_fragment(&t).unwrap();
@@ -691,7 +663,6 @@ mod tests {
         let store_result = server
             .store_memory(Parameters(StoreMemoryParams {
                 content: "Temporary fact".to_string(),
-                summary: "Temp".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
@@ -724,7 +695,6 @@ mod tests {
         let store_result = server
             .store_memory(Parameters(StoreMemoryParams {
                 content: "Original content".to_string(),
-                summary: "Original".to_string(),
                 parent_id: None,
                 depth: 0,
             }))
@@ -736,7 +706,6 @@ mod tests {
             .update_memory(Parameters(UpdateMemoryParams {
                 fragment_id: frag_id.clone(),
                 content: "Updated content".to_string(),
-                summary: "Updated".to_string(),
             }))
             .await;
         assert!(update_result.contains("updated"));
@@ -766,7 +735,7 @@ mod tests {
                 limit: 10,
             }))
             .await;
-        assert!(result.contains("parent_summary"));
+        assert!(result.contains("parent_content"));
         assert!(result.contains("Rust"));
     }
 }

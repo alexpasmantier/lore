@@ -141,17 +141,14 @@ impl LoreDb {
     }
 
     /// List all top-level topics (L0 nodes), sorted by relevance (most relevant first).
-    /// Optionally filter by a keyword query (matched against summary and content).
+    /// Optionally filter by a keyword query (matched against content).
     pub fn list_topics(&self, filter: Option<&str>) -> Vec<Fragment> {
         let mut topics = self.storage.get_fragments_at_depth(0).unwrap_or_default();
 
         // Apply keyword filter if provided
         if let Some(query) = filter {
             let query_lower = query.to_lowercase();
-            topics.retain(|t| {
-                t.summary.to_lowercase().contains(&query_lower)
-                    || t.content.to_lowercase().contains(&query_lower)
-            });
+            topics.retain(|t| t.content.to_lowercase().contains(&query_lower));
         }
 
         topics.sort_by(|a, b| {
@@ -194,16 +191,15 @@ impl LoreDb {
         Ok(id)
     }
 
-    /// Update a fragment's content and summary, auto-embedding the new content.
+    /// Update a fragment's content, auto-embedding the new content.
     pub fn update(
         &self,
         id: FragmentId,
         new_content: &str,
-        new_summary: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let embedding = self.embed_text(new_content);
         self.storage
-            .update_fragment_content(id, new_content, new_summary, embedding.as_deref())?;
+            .update_fragment_content(id, new_content, embedding.as_deref())?;
         Ok(())
     }
 
@@ -351,19 +347,16 @@ impl LoreDb {
             .filter(|f| f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .filter_map(|f| {
                 let content_lower = f.content.to_lowercase();
-                let summary_lower = f.summary.to_lowercase();
 
                 // Simple text matching score, blended with relevance
-                let text_score = if content_lower.contains(&topic_lower)
-                    || summary_lower.contains(&topic_lower)
-                {
+                let text_score = if content_lower.contains(&topic_lower) {
                     0.8
                 } else {
                     // Check for individual word matches
                     let words: Vec<&str> = topic_lower.split_whitespace().collect();
                     let matches = words
                         .iter()
-                        .filter(|w| content_lower.contains(*w) || summary_lower.contains(*w))
+                        .filter(|w| content_lower.contains(*w))
                         .count();
                     if matches > 0 {
                         0.3 + (0.4 * matches as f32 / words.len() as f32)
@@ -406,7 +399,6 @@ mod tests {
         // Create a small knowledge hierarchy
         let mut topic = Fragment::new(
             "Rust programming language".to_string(),
-            "Rust".to_string(),
             0,
         );
         topic.embedding = vec![0.1; 384];
@@ -414,7 +406,6 @@ mod tests {
 
         let mut concept = Fragment::new(
             "Rust async programming with tokio".to_string(),
-            "Async Rust".to_string(),
             1,
         );
         concept.embedding = vec![0.2; 384];
@@ -432,7 +423,6 @@ mod tests {
 
         let mut fact = Fragment::new(
             "Tokio uses a work-stealing scheduler".to_string(),
-            "Work-stealing scheduler".to_string(),
             2,
         );
         fact.embedding = vec![0.3; 384];
@@ -456,7 +446,7 @@ mod tests {
         let db = make_test_db();
         let topics = db.list_topics(None);
         assert_eq!(topics.len(), 1);
-        assert_eq!(topics[0].summary, "Rust");
+        assert_eq!(topics[0].content, "Rust programming language");
     }
 
     #[test]
@@ -467,7 +457,7 @@ mod tests {
 
         let children = db.children(topic.id);
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].summary, "Async Rust");
+        assert_eq!(children[0].content, "Rust async programming with tokio");
 
         let parent = db.parent(children[0].id).unwrap();
         assert_eq!(parent.id, topic.id);
@@ -479,13 +469,13 @@ mod tests {
         let topics = db.list_topics(None);
         let tree = db.subtree(topics[0].id, 3).unwrap();
 
-        assert_eq!(tree.fragment.summary, "Rust");
+        assert_eq!(tree.fragment.content, "Rust programming language");
         assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].fragment.summary, "Async Rust");
+        assert_eq!(tree.children[0].fragment.content, "Rust async programming with tokio");
         assert_eq!(tree.children[0].children.len(), 1);
         assert_eq!(
-            tree.children[0].children[0].fragment.summary,
-            "Work-stealing scheduler"
+            tree.children[0].children[0].fragment.content,
+            "Tokio uses a work-stealing scheduler"
         );
     }
 
@@ -494,17 +484,17 @@ mod tests {
         let db = make_test_db();
         let results = db.query("rust", 0, 10);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].fragment.summary, "Rust");
+        assert_eq!(results[0].fragment.content, "Rust programming language");
     }
 
     #[test]
     fn test_supersede() {
         let db = make_test_db();
 
-        let old = Fragment::new("Old fact".to_string(), "Old".to_string(), 2);
+        let old = Fragment::new("Old fact".to_string(), 2);
         db.storage().insert_fragment(&old).unwrap();
 
-        let new = Fragment::new("New fact".to_string(), "New".to_string(), 2);
+        let new = Fragment::new("New fact".to_string(), 2);
         db.storage().insert_fragment(&new).unwrap();
 
         db.supersede(old.id, new.id).unwrap();
@@ -536,12 +526,11 @@ mod tests {
         let topics = db.list_topics(None);
         let topic_id = topics[0].id;
 
-        db.update(topic_id, "Updated Rust content", "Updated Rust")
+        db.update(topic_id, "Updated Rust content")
             .unwrap();
 
         let loaded = db.storage().get_fragment(topic_id).unwrap().unwrap();
         assert_eq!(loaded.content, "Updated Rust content");
-        assert_eq!(loaded.summary, "Updated Rust");
     }
 
     #[test]
@@ -551,7 +540,6 @@ mod tests {
 
         let new_concept = Fragment::new(
             "Rust ownership system".to_string(),
-            "Ownership".to_string(),
             1,
         );
         let new_id = db.insert(new_concept, Some(topics[0].id)).unwrap();

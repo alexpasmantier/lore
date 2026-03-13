@@ -40,7 +40,7 @@ fn live_schema_has_v2_columns() {
     assert!(first.decay_rate > 0.0);
     println!(
         "First topic: '{}' importance={:.2} relevance={:.4} decay_rate={:.4}",
-        first.summary, first.importance, first.relevance_score, first.decay_rate
+        first.content, first.importance, first.relevance_score, first.decay_rate
     );
 }
 
@@ -54,9 +54,9 @@ fn live_topics_sorted_by_relevance() {
         assert!(
             topics[i - 1].relevance_score >= topics[i].relevance_score,
             "Topics should be sorted by relevance descending: {} ({:.4}) vs {} ({:.4})",
-            topics[i - 1].summary,
+            topics[i - 1].content,
             topics[i - 1].relevance_score,
-            topics[i].summary,
+            topics[i].content,
             topics[i].relevance_score,
         );
     }
@@ -97,7 +97,7 @@ fn live_reinforcement_on_access() {
 
     println!(
         "Before: '{}' relevance={:.4} access_count={}",
-        target.summary, before_rel, before_access
+        target.content, before_rel, before_access
     );
 
     // Reinforce it
@@ -116,7 +116,7 @@ fn live_reinforcement_on_access() {
     let after = db.storage().get_fragment(target.id).unwrap().unwrap();
     println!(
         "After:  '{}' relevance={:.4} access_count={} last_reinforced={}",
-        after.summary, after.relevance_score, after.access_count, after.last_reinforced
+        after.content, after.relevance_score, after.access_count, after.last_reinforced
     );
 
     assert!(
@@ -146,7 +146,7 @@ fn live_spreading_activation() {
 
         println!(
             "Boosting child '{}' of '{}' (relevance before: {:.4})",
-            child.summary, topic.summary, before
+            child.content, topic.content, before
         );
 
         // Boost the child (spreading activation)
@@ -182,7 +182,7 @@ fn live_print_relevance_distribution() {
         let age_days = (now - t.created_at) / 86400;
         println!(
             "{:<60} {:.3}  {:>4}  {:>5}",
-            &t.summary[..t.summary.len().min(60)],
+            &t.content[..t.content.len().min(60)],
             t.relevance_score,
             t.access_count,
             age_days,

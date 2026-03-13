@@ -150,13 +150,12 @@ async fn phase0_digest_staged(
             .list_topics(None)
             .into_iter()
             .map(|t| {
-                let children_summaries =
-                    db.children(t.id).into_iter().map(|c| c.summary).collect();
+                let children_content =
+                    db.children(t.id).into_iter().map(|c| c.content).collect();
                 ingestion::ExistingTopicContext {
                     id: t.id.to_string(),
-                    summary: t.summary.clone(),
                     content: t.content.clone(),
-                    children_summaries,
+                    children_content,
                 }
             })
             .collect();
@@ -325,31 +324,33 @@ async fn phase3_resummarization(
             continue;
         }
 
-        // Build a summary of children for Claude to synthesize
-        let children_summaries: Vec<String> = children
+        // Build a list of children content for Claude to synthesize
+        let children_list: Vec<String> = children
             .iter()
-            .map(|c| format!("- {}: {}", c.summary, c.content))
+            .map(|c| format!("- {}", c.content))
             .collect();
 
+        let topic_preview: String = topic.content.chars().take(200).collect();
         let prompt = format!(
-            "Given these sub-topics of \"{}\", write a self-contained overview paragraph \
-             (3-5 sentences) that captures the key knowledge. Do not use bullet points or \
-             lists — write flowing prose.\n\nSub-topics:\n{}\n\nRespond with ONLY the paragraph, \
-             no explanation.",
-            topic.summary,
-            children_summaries.join("\n")
+            "Given these child fragments of a knowledge node:\n\nCurrent content: \"{}\"\n\n\
+             Children:\n{}\n\n\
+             Write a self-contained overview paragraph (3-5 sentences) that captures the key \
+             knowledge at a higher abstraction level. Do not use bullet points or lists — \
+             write flowing prose.\n\nRespond with ONLY the paragraph, no explanation.",
+            topic_preview,
+            children_list.join("\n")
         );
 
         match client.complete(&prompt).await {
             Ok(new_content) => {
                 let new_content = new_content.trim();
                 if !new_content.is_empty() {
-                    db.update(topic.id, new_content, &topic.summary)?;
+                    db.update(topic.id, new_content)?;
                     resummarized += 1;
                 }
             }
             Err(e) => {
-                tracing::warn!("Failed to re-summarize topic '{}': {}", topic.summary, e);
+                tracing::warn!("Failed to re-summarize topic: {}", e);
             }
         }
     }
@@ -600,7 +601,7 @@ fn reparent_and_prune(db: &LoreDb, frag: &Fragment) -> Result<(), Box<dyn std::e
     db.prune(frag.id)?;
     tracing::debug!(
         "Pruned forgotten fragment: {} (relevance={:.3})",
-        frag.summary,
+        &frag.content[..frag.content.len().min(60)],
         frag.relevance_score
     );
     Ok(())

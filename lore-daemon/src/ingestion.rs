@@ -16,23 +16,19 @@ pub struct ExtractedKnowledge {
 pub struct ExtractedTopicEntry {
     /// UUID of existing topic to augment, or null for a new topic.
     pub existing_id: Option<String>,
-    /// One-line label for the topic.
-    pub summary: String,
-    /// Rich, self-contained paragraph overview.
+    /// Self-contained knowledge content.
     pub content: String,
     /// Importance level: "high", "medium", or "low".
     #[serde(default = "default_importance")]
     pub importance: String,
-    /// Drill-down children at increasing detail.
+    /// More specific children at deeper abstraction levels.
     #[serde(default)]
     pub children: Vec<ExtractedNode>,
 }
 
-/// A recursive knowledge node — each level is a self-contained summary,
-/// children are drill-downs of their parent.
+/// A recursive knowledge node at a given abstraction level.
 #[derive(Debug, Deserialize)]
 pub struct ExtractedNode {
-    pub summary: String,
     pub content: String,
     /// Importance level: "high", "medium", or "low".
     #[serde(default = "default_importance")]
@@ -62,9 +58,8 @@ const MAX_TREE_DEPTH: u32 = 5;
 #[derive(Clone)]
 pub struct ExistingTopicContext {
     pub id: String,
-    pub summary: String,
     pub content: String,
-    pub children_summaries: Vec<String>,
+    pub children_content: Vec<String>,
 }
 
 /// Build the extraction prompt, including existing topic context so Claude can
@@ -115,7 +110,7 @@ Knowledge is organized as a tree of **abstraction levels**. Higher nodes capture
 - **Middle levels**: Narrower aspects, design decisions, trade-offs
 - **Leaf levels**: Concrete details, specific commands, exact findings
 
-Keep summaries short (under 60 chars). Aim for 1-3 root topics per conversation, with 1-2 levels of children. Fewer high-quality nodes is better than many shallow ones.
+Aim for 1-3 root topics per conversation, with 1-2 levels of children. Fewer high-quality nodes is better than many shallow ones.
 
 "#,
     );
@@ -132,20 +127,19 @@ Keep summaries short (under 60 chars). Aim for 1-3 root topics per conversation,
         );
         // Cap at 30 topics to avoid prompt bloat
         for topic in existing_topics.iter().take(30) {
-            prompt.push_str(&format!("- `{}`: **{}**\n", topic.id, topic.summary));
-            // Include truncated content for context
             let content_preview: String = topic.content.chars().take(200).collect();
-            if !content_preview.is_empty() {
-                prompt.push_str(&format!("  {}\n", content_preview));
-            }
-            if !topic.children_summaries.is_empty() {
-                let children: Vec<&str> = topic
-                    .children_summaries
+            prompt.push_str(&format!("- `{}`: {}\n", topic.id, content_preview));
+            if !topic.children_content.is_empty() {
+                let children: Vec<String> = topic
+                    .children_content
                     .iter()
                     .take(5)
-                    .map(|s| s.as_str())
+                    .map(|s| {
+                        let preview: String = s.chars().take(100).collect();
+                        preview
+                    })
                     .collect();
-                prompt.push_str(&format!("  Sub-topics: {}\n", children.join(", ")));
+                prompt.push_str(&format!("  Children: {}\n", children.join(" | ")));
             }
         }
         prompt.push('\n');
@@ -153,7 +147,7 @@ Keep summaries short (under 60 chars). Aim for 1-3 root topics per conversation,
 
     prompt.push_str(
         r#"## Output format (valid JSON, no markdown, no explanation)
-{"topics": [{"existing_id": "uuid-or-null", "summary": "...", "content": "...", "importance": "high|medium|low", "children": [{"summary": "...", "content": "...", "importance": "high|medium|low", "children": [...]}]}]}
+{"topics": [{"existing_id": "uuid-or-null", "content": "...", "importance": "high|medium|low", "children": [{"content": "...", "importance": "high|medium|low", "children": [...]}]}]}
 
 If nothing worth remembering, return: {"topics": []}
 It is completely fine — even expected — to return empty topics for routine conversations.
@@ -223,7 +217,7 @@ pub fn store_knowledge(
             Some(id_str) => match FragmentId::parse(id_str) {
                 Ok(id) => {
                     if db.storage().get_fragment(id).ok().flatten().is_some() {
-                        db.update(id, &topic_entry.content, &topic_entry.summary)?;
+                        db.update(id, &topic_entry.content)?;
                         id
                     } else {
                         tracing::warn!(
@@ -271,7 +265,7 @@ fn create_new_topic(
 ) -> Result<FragmentId, Box<dyn std::error::Error>> {
     let imp = importance_value(&entry.importance);
     let mut topic =
-        Fragment::new_with_importance(entry.content.clone(), entry.summary.clone(), 0, imp);
+        Fragment::new_with_importance(entry.content.clone(), 0, imp);
     topic.source_session = source_session.map(String::from);
     db.insert(topic, None)
 }
@@ -292,7 +286,7 @@ fn insert_tree_recursive_inner(
 
     let imp = importance_value(&node.importance);
     let mut frag =
-        Fragment::new_with_importance(node.content.clone(), node.summary.clone(), depth, imp);
+        Fragment::new_with_importance(node.content.clone(), depth, imp);
     frag.source_session = source_session.map(String::from);
     let frag_id = db.insert(frag, Some(parent_id))?;
     let mut count = 1;
@@ -360,13 +354,10 @@ mod tests {
         let json = r#"{
             "topics": [{
                 "existing_id": null,
-                "summary": "Rust Programming",
                 "content": "Rust is a systems programming language focused on safety and performance.",
                 "children": [{
-                    "summary": "Ownership Model",
                     "content": "Rust's ownership model ensures memory safety without a garbage collector.",
                     "children": [{
-                        "summary": "Borrowing Rules",
                         "content": "References must follow borrowing rules: one mutable or many immutable.",
                         "children": []
                     }]
@@ -377,7 +368,7 @@ mod tests {
         let knowledge: ExtractedKnowledge = serde_json::from_str(json).unwrap();
         assert_eq!(knowledge.topics.len(), 1);
         assert!(knowledge.topics[0].existing_id.is_none());
-        assert_eq!(knowledge.topics[0].summary, "Rust Programming");
+        assert!(knowledge.topics[0].content.contains("Rust"));
         assert_eq!(knowledge.topics[0].children.len(), 1);
         assert_eq!(knowledge.topics[0].children[0].children.len(), 1);
     }
@@ -387,7 +378,6 @@ mod tests {
         let json = r#"{
             "topics": [{
                 "existing_id": "550e8400-e29b-41d4-a716-446655440000",
-                "summary": "Rust Programming",
                 "content": "Updated overview of Rust programming.",
                 "children": []
             }]
@@ -412,15 +402,13 @@ mod tests {
         let topics = vec![
             ExistingTopicContext {
                 id: "id-1".to_string(),
-                summary: "Rust".to_string(),
                 content: "Rust programming language".to_string(),
-                children_summaries: vec![],
+                children_content: vec![],
             },
             ExistingTopicContext {
                 id: "id-2".to_string(),
-                summary: "Python".to_string(),
                 content: "Python programming language".to_string(),
-                children_summaries: vec!["Data science".to_string()],
+                children_content: vec!["Data science".to_string()],
             },
         ];
         let prompt = build_extraction_prompt(&topics);
