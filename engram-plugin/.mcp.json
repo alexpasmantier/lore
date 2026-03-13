@@ -1,8 +1,0 @@
-{
-  "memory": {
-    "command": "engram-mcp",
-    "env": {
-      "ENGRAM_DB_PATH": "${HOME}/.engram/memory.db"
-    }
-  }
-}

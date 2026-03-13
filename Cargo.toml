@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "engram-db",
-    "engram-mcp",
-    "engram-daemon",
+    "lore-db",
+    "lore-mcp",
+    "lore-daemon",
 ]
 
 [workspace.dependencies]

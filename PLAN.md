@@ -1,10 +1,10 @@
-# Engram: Brain-Inspired Persistent Memory for AI Agents
+# Lore: Brain-Inspired Persistent Memory for AI Agents
 
 ## Context
 
 Claude Code agents currently have no long-term memory across conversations. Each session starts from scratch. The built-in file-based memory system (CLAUDE.md / MEMORY.md) is primitive — flat files, manually maintained, no semantic understanding, no consolidation.
 
-**Engram** is a brain-inspired memory system that gives agents persistent, queryable, hierarchically-organized long-term memory. A background daemon continuously ingests conversations and distills them into a semantic knowledge graph. Agents access this graph via MCP tools, querying at various depths like the brain recalls at different levels of abstraction.
+**Lore** is a brain-inspired memory system that gives agents persistent, queryable, hierarchically-organized long-term memory. A background daemon continuously ingests conversations and distills them into a semantic knowledge graph. Agents access this graph via MCP tools, querying at various depths like the brain recalls at different levels of abstraction.
 
 ## Key Decisions
 
@@ -22,7 +22,7 @@ Claude Code agents currently have no long-term memory across conversations. Each
            │ stdio (JSON-RPC)
            ▼
 ┌──────────────────────┐     ┌─────────────────────┐
-│   engram-mcp         │     │   engram-daemon      │
+│   lore-mcp         │     │   lore-daemon      │
 │   (MCP Server)       │     │   (Background)       │
 │                      │     │                      │
 │ Tools:               │     │ ┌─────────────────┐  │
@@ -39,7 +39,7 @@ Claude Code agents currently have no long-term memory across conversations. Each
            │ read                       │ read/write
            ▼                            ▼
       ┌─────────────────────────────────────┐
-      │          ~/.engram/memory.db         │
+      │          ~/.lore/memory.db         │
       │          (SQLite + WAL mode)         │
       │                                      │
       │  Fragments (nodes with embeddings)   │
@@ -48,7 +48,7 @@ Claude Code agents currently have no long-term memory across conversations. Each
       └─────────────────────────────────────┘
 ```
 
-## Component 1: engram-db (Core Library)
+## Component 1: lore-db (Core Library)
 
 The brain-inspired graph database. All other components depend on this.
 
@@ -152,7 +152,7 @@ CREATE INDEX idx_edges_kind ON edges(kind);
 ### Query API
 
 ```rust
-impl EngramDb {
+impl LoreDb {
     /// Search by topic string, return fragments at specified depth.
     /// Uses embedding similarity to find relevant branches, then returns nodes at target depth.
     fn query(&self, topic: &str, depth: u32, limit: usize) -> Vec<ScoredFragment>;
@@ -199,7 +199,7 @@ Use **fastembed-rs** with the `all-MiniLM-L6-v2` model (384 dimensions):
 
 Similarity search: brute-force cosine similarity over all fragments at the target depth. For <100K fragments this is sub-millisecond. Can add HNSW index later if needed.
 
-## Component 2: engram-mcp (MCP Server)
+## Component 2: lore-mcp (MCP Server)
 
 Stdio-based MCP server that agents use to access memory.
 
@@ -294,10 +294,10 @@ We define a `MemoryServer` struct that implements `rmcp`'s `ServerHandler` trait
 
 - Opens SQLite database in **read-only mode** (WAL allows concurrent readers)
 - Exception: `store_memory` opens a brief write transaction
-- Database path: `~/.engram/memory.db` (configurable via env `ENGRAM_DB_PATH`)
+- Database path: `~/.lore/memory.db` (configurable via env `LORE_DB_PATH`)
 - Logging to stderr (MCP convention — stdout is protocol only)
 
-## Component 3: engram-daemon (Background Process)
+## Component 3: lore-daemon (Background Process)
 
 Long-running daemon with two concurrent subsystems.
 
@@ -378,10 +378,10 @@ Runs on a configurable interval (default: every 2 hours). Seven phases (like a s
 ### Daemon Process Management
 
 - Runs as a standard background process (not a system daemon initially)
-- Start: `engram-daemon start` (forks to background, writes PID to `~/.engram/daemon.pid`)
-- Stop: `engram-daemon stop`
-- Status: `engram-daemon status`
-- Config file: `~/.engram/config.toml`
+- Start: `lore-daemon start` (forks to background, writes PID to `~/.lore/daemon.pid`)
+- Stop: `lore-daemon stop`
+- Status: `lore-daemon status`
+- Config file: `~/.lore/config.toml`
   ```toml
   [ingestion]
   poll_interval_secs = 30
@@ -394,23 +394,23 @@ Runs on a configurable interval (default: every 2 hours). Seven phases (like a s
   prune_age_days = 30
 
   [database]
-  path = "~/.engram/memory.db"
+  path = "~/.lore/memory.db"
 
   [claude]
   api_key_env = "ANTHROPIC_API_KEY"
   ```
 
-## Component 4: engram-plugin (Claude Code Plugin)
+## Component 4: lore-plugin (Claude Code Plugin)
 
 ### Plugin Structure
 
 ```
-engram/engram-plugin/
+lore/lore-plugin/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .mcp.json
 ├── skills/
-│   └── engram-memory/
+│   └── lore-memory/
 │       └── SKILL.md
 └── commands/
     ├── remember.md
@@ -420,7 +420,7 @@ engram/engram-plugin/
 ### plugin.json
 ```json
 {
-  "name": "engram",
+  "name": "lore",
   "description": "Brain-inspired persistent long-term memory for AI agents. Gives Claude persistent memory across conversations via a hierarchical knowledge graph.",
   "author": {
     "name": "Alex"
@@ -432,23 +432,23 @@ engram/engram-plugin/
 ```json
 {
   "memory": {
-    "command": "engram-mcp",
+    "command": "lore-mcp",
     "env": {
-      "ENGRAM_DB_PATH": "${HOME}/.engram/memory.db"
+      "LORE_DB_PATH": "${HOME}/.lore/memory.db"
     }
   }
 }
 ```
 
-The `engram-mcp` binary must be in `$PATH` (or use absolute path after `cargo install`).
+The `lore-mcp` binary must be in `$PATH` (or use absolute path after `cargo install`).
 
-### skills/engram-memory/SKILL.md
+### skills/lore-memory/SKILL.md
 
 This is what gives every agent the "awareness" that it has persistent memory. The skill triggers automatically when the agent's task would benefit from long-term context.
 
 ```markdown
 ---
-name: engram-memory
+name: lore-memory
 description: This skill should be used when the agent is working on a task that could
   benefit from long-term memory, prior conversation context, or stored knowledge. Triggers
   when the user mentions "remember", "recall", "what do you know about", "previous
@@ -457,7 +457,7 @@ description: This skill should be used when the agent is working on a task that 
 version: 0.1.0
 ---
 
-# Engram: Long-Term Memory
+# Lore: Long-Term Memory
 
 You have access to a persistent long-term memory system. [instructions for the agent...]
 ```
@@ -467,7 +467,7 @@ You have access to a persistent long-term memory system. [instructions for the a
 ---
 description: Search your long-term memory for knowledge about a topic
 argument-hint: <topic> [--depth N]
-allowed-tools: ["mcp__plugin_engram_memory__*"]
+allowed-tools: ["mcp__plugin_lore_memory__*"]
 ---
 # Recall from memory ... [prompt]
 ```
@@ -477,7 +477,7 @@ allowed-tools: ["mcp__plugin_engram_memory__*"]
 ---
 description: Explicitly store something in long-term memory
 argument-hint: <what to remember>
-allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
+allowed-tools: ["mcp__plugin_lore_memory__store_memory"]
 ---
 # Store to memory ... [prompt]
 ```
@@ -485,10 +485,10 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 ## Rust Workspace Layout
 
 ```
-/Users/alex/code/rust/engram/
+/Users/alex/code/rust/lore/
 ├── Cargo.toml                  # Workspace manifest
 ├── CLAUDE.md                   # Dev instructions
-├── engram-db/
+├── lore-db/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── lib.rs              # Public API, re-exports
@@ -500,13 +500,13 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 │   │   └── storage.rs          # SQLite backend (create, read, write, migrate, v2 columns)
 │   └── tests/
 │       ├── brain_behavior.rs   # 30 behavioral tests (decay, reinforcement, importance, etc.)
-│       └── live_db_test.rs     # 6 tests against real ~/.engram/memory.db (ignored by default)
-├── engram-mcp/
+│       └── live_db_test.rs     # 6 tests against real ~/.lore/memory.db (ignored by default)
+├── lore-mcp/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs             # Entry point, stdio transport via rmcp
 │       └── server.rs           # MemoryServer impl with #[tool] methods
-├── engram-daemon/
+├── lore-daemon/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── lib.rs              # Public module exports (for integration tests)
@@ -519,12 +519,12 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 │   │   └── claude_client.rs    # Claude API HTTP client + CLI fallback
 │   └── tests/
 │       └── scenarios.rs        # 27 integration tests with fixture conversations
-└── engram-plugin/
+└── lore-plugin/
     ├── .claude-plugin/
     │   └── plugin.json
     ├── .mcp.json
     ├── skills/
-    │   └── engram-memory/
+    │   └── lore-memory/
     │       └── SKILL.md
     └── commands/
         ├── remember.md
@@ -534,21 +534,21 @@ allowed-tools: ["mcp__plugin_engram_memory__store_memory"]
 ## Key Dependencies
 
 ```toml
-# engram-db
+# lore-db
 rusqlite = { version = "0.32", features = ["bundled"] }
 fastembed = "5"              # Local embeddings (all-MiniLM-L6-v2, 384-dim)
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# engram-mcp
-engram-db = { path = "../engram-db" }
+# lore-mcp
+lore-db = { path = "../lore-db" }
 rmcp = { version = "1.2", features = ["server", "transport-io"] }  # Needs schemars 1.x
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 
-# engram-daemon
-engram-db = { path = "../engram-db" }
+# lore-daemon
+lore-db = { path = "../lore-db" }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 toml = "0.8"
@@ -564,33 +564,33 @@ futures = "0.3"
 
 All phases are complete. Current state:
 
-### Phase 1: Foundation — engram-db ✓
+### Phase 1: Foundation — lore-db ✓
 - Types, SQLite storage with WAL mode, fastembed embeddings, query engine
 - Brain-inspired relevance scoring (Ebbinghaus curve, importance weighting, decay rates)
 - Reconsolidation on recall with spreading activation
 - Schema v2 migration for brain-inspired columns
 - 24 unit tests + 30 behavioral tests + 6 live DB tests
 
-### Phase 2: Agent Interface — engram-mcp ✓
+### Phase 2: Agent Interface — lore-mcp ✓
 - `MemoryServer` with `rmcp` 1.2 SDK, 5 MCP tools
 - Responses include relevance scores, topics sorted by relevance
 - 5 unit tests
 
-### Phase 3: Background Processing — engram-daemon ✓
+### Phase 3: Background Processing — lore-daemon ✓
 - Config, JSONL parser, file watcher, Claude API client with CLI fallback
 - Ingestion with importance classification (high/medium/low)
 - Temporal edges between sequential siblings
 - 7-phase consolidation (decay, merge, link, resummarize, contradict, prune edges, prune fragments)
 - 11 unit tests + 27 integration scenario tests with fixture conversations
 
-### Phase 4: Plugin — engram-plugin ✓
+### Phase 4: Plugin — lore-plugin ✓
 - plugin.json, .mcp.json, SKILL.md, /recall and /remember commands
 
 ## Test Coverage (97 tests)
 
-- **engram-db unit tests (24):** Fragment/edge CRUD, embedding roundtrip, query types, watermarks
+- **lore-db unit tests (24):** Fragment/edge CRUD, embedding roundtrip, query types, watermarks
 - **Brain behavior tests (30):** Decay, reinforcement, spreading activation, importance, forgetting, blended ranking, edge lifecycle, temporal edges, schema migration, reconsolidation, supersession, graph integrity, end-to-end lifecycles
 - **Integration scenarios (27):** Fixture conversation parsing, multi-session accumulation, memory lifecycle over months, reconsolidation cascade, topic augmentation, forgetting/pruning, edge decay, full pipeline E2E
-- **Live DB tests (6, ignored):** Schema verification, topic sorting, decay recomputation, reinforcement, spreading activation against real `~/.engram/memory.db`
+- **Live DB tests (6, ignored):** Schema verification, topic sorting, decay recomputation, reinforcement, spreading activation against real `~/.lore/memory.db`
 - **MCP server tests (5):** Query, store, traverse, list topics
 - **Daemon unit tests (11):** JSONL parsing, extraction prompt building, zoom-tree response parsing

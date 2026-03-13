@@ -1,12 +1,10 @@
-# engram
+# lore
 
-Persistent memory for AI agents. Engram gives agents long-term recall that works the way memory should — important things stick, unused knowledge fades, and revisiting something strengthens it.
-
-A background daemon watches your conversations, distills them into a hierarchical knowledge graph, and periodically consolidates it: merging duplicates, resolving contradictions, and letting stale fragments fade away. Agents access the graph through [MCP](https://modelcontextprotocol.io) tools.
+Persistent memory for AI agents. A background daemon ingests conversation logs, extracts knowledge into a hierarchical graph, and periodically consolidates it (merging duplicates, resolving contradictions, pruning stale fragments). Agents query the graph through [MCP](https://modelcontextprotocol.io) tools.
 
 ## How it works
 
-Knowledge is organized as a hierarchy of increasing specificity — a zoom-tree where every node is self-contained and children elaborate on their parent:
+Knowledge is stored in a tree of increasing specificity. Each node is a self-contained summary; children elaborate on their parent:
 
 | Depth | Role | Example |
 |-------|------|---------|
@@ -15,19 +13,15 @@ Knowledge is organized as a hierarchy of increasing specificity — a zoom-tree 
 | 2 | **Fact** | "tokio uses work-stealing scheduler" |
 | 3+ | **Detail** | "`#[tokio::main(flavor = \"multi_thread\")]` for CPU-bound" |
 
-Agents start broad and drill deeper as needed.
+Queries start broad and drill deeper as needed.
 
-### Memory dynamics
+### Relevance model
 
-Engram models memory as something alive rather than a static store:
+Fragments have a relevance score that decays exponentially over time (Ebbinghaus forgetting curve). Querying a fragment resets its decay timer and spreads a small activation boost to neighbors. Each additional access increases strength with diminishing returns.
 
-**Decay** — Every fragment has a relevance score that drops exponentially over time (Ebbinghaus forgetting curve). Old, unaccessed knowledge ranks lower and eventually becomes invisible to queries. Fragments with negligible relevance are permanently pruned during consolidation.
+At ingestion, fragments are classified as high, medium, or low importance. Importance controls the decay rate and sets a relevance floor — high-importance fragments never fully decay, even if never accessed.
 
-**Reinforcement** — Querying a fragment resets its decay timer and spreads a small activation boost to its neighbors. Frequently accessed knowledge stays fresh. Each additional access strengthens the memory, but with diminishing returns (spacing effect).
-
-**Importance** — At ingestion, each fragment is classified as high, medium, or low importance. This controls both the decay rate (important memories fade slower) and the relevance floor (critical knowledge never fully vanishes, even if never accessed).
-
-**Blended ranking** — Results are scored as 70% semantic similarity + 30% relevance, so a perfect semantic match that hasn't been touched in months ranks below a good match that was recently reinforced.
+Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so stale fragments rank lower even when they're a good semantic match. Fragments below the visibility threshold (0.05) are excluded from results entirely.
 
 ## Architecture
 
@@ -37,34 +31,34 @@ Engram models memory as something alive rather than a static store:
 └──────────┬──────────────────────────────┘
            │ stdio (JSON-RPC)
            ▼
-┌──────────────────┐    ┌─────────────────┐
-│   engram-mcp     │    │  engram-daemon   │
-│   (MCP server)   │    │  (background)    │
+┌──────────────────┐    ┌──────────────────┐
+│    lore-mcp      │    │   lore-daemon    │
+│   (MCP server)   │    │   (background)   │
 │                  │    │                  │
 │  5 query/store   │    │  Ingestion loop  │
 │  tools for       │    │  Consolidation   │
 │  agents          │    │  (7 phases)      │
-└────────┬─────────┘    └────────┬────────┘
+└────────┬─────────┘    └────────┬─────────┘
          │ read                  │ read/write
-         ▼                      ▼
-    ┌──────────────────────────────────┐
-    │       ~/.engram/memory.db        │
-    │       (SQLite + WAL mode)        │
-    │                                  │
-    │  Fragments · Edges · Watermarks  │
-    └──────────────────────────────────┘
+         ▼                       ▼
+    ┌───────────────────────────────────┐
+    │        ~/.lore/memory.db          │
+    │        (SQLite + WAL mode)        │
+    │                                   │
+    │  Fragments · Edges · Watermarks   │
+    └───────────────────────────────────┘
 ```
 
 **Crates:**
 
-- **engram-db** — Core library. SQLite storage with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`). Relevance scoring, reconsolidation, spreading activation.
-- **engram-mcp** — MCP server over stdio (`rmcp`). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
-- **engram-daemon** — Background process. Polls `~/.claude/projects/` for conversation logs, extracts knowledge with importance classification via Claude API, and runs 7-phase consolidation (relevance decay, topic merging, associative linking, re-summarization, contradiction resolution, edge pruning, fragment pruning).
-- **engram-plugin** — Claude Code plugin with `/recall` and `/remember` slash commands.
+- **lore-db** — Core library. SQLite storage, local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`), relevance scoring, spreading activation.
+- **lore-mcp** — MCP server over stdio (`rmcp`). Tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
+- **lore-daemon** — Background process. Polls `~/.claude/projects/` for conversation logs, extracts knowledge via Claude API, runs 7-phase consolidation.
+- **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
-### Consolidation phases
+### Consolidation
 
-Consolidation runs periodically (default: every 2 hours) and walks the entire graph:
+Runs periodically (default: every 2 hours) and walks the entire graph:
 
 | Phase | Name | What it does |
 |-------|------|-------------|
@@ -79,14 +73,14 @@ Consolidation runs periodically (default: every 2 hours) and walks the entire gr
 ## Install
 
 ```sh
-cargo build --release -p engram-mcp -p engram-daemon
-cp target/release/engram-mcp target/release/engram-daemon ~/.local/bin/
+cargo build --release -p lore-mcp -p lore-daemon
+cp target/release/lore-mcp target/release/lore-daemon ~/.local/bin/
 ```
 
 Register the MCP server (user-level, all sessions):
 
 ```sh
-claude mcp add --scope user memory -- engram-mcp
+claude mcp add --scope user memory -- lore-mcp
 ```
 
 ## Usage
@@ -104,17 +98,17 @@ claude mcp add --scope user memory -- engram-mcp
 ### Daemon
 
 ```sh
-engram-daemon start          # foreground
-engram-daemon daemonize      # background
-engram-daemon ingest         # single ingestion pass
-engram-daemon consolidate    # single consolidation pass
-engram-daemon status         # check if running
-engram-daemon stop           # stop background daemon
+lore-daemon start          # foreground
+lore-daemon daemonize      # background
+lore-daemon ingest         # single ingestion pass
+lore-daemon consolidate    # single consolidation pass
+lore-daemon status         # check if running
+lore-daemon stop           # stop background daemon
 ```
 
 ### Configuration
 
-`~/.engram/config.toml`:
+`~/.lore/config.toml`:
 
 ```toml
 [ingestion]
@@ -128,7 +122,7 @@ similarity_threshold = 0.8
 min_relevance_prune = 0.02
 
 [database]
-path = "~/.engram/memory.db"
+path = "~/.lore/memory.db"
 ```
 
 ## Development
@@ -140,4 +134,4 @@ cargo clippy --workspace # lint
 cargo fmt --all          # format
 ```
 
-The test suite covers unit tests across all three crates, behavioral tests for memory dynamics (decay curves, reinforcement, spreading activation, importance thresholds, forgetting), and integration scenarios that run fixture conversations through the full pipeline — ingestion, aging, consolidation, querying, and verification.
+Tests cover unit tests across all crates, behavioral tests for the relevance model (decay, reinforcement, spreading activation, importance, forgetting), and integration scenarios that run fixture conversations through the full pipeline.

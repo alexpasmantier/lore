@@ -1,0 +1,8 @@
+{
+  "memory": {
+    "command": "lore-mcp",
+    "env": {
+      "LORE_DB_PATH": "${HOME}/.lore/memory.db"
+    }
+  }
+}
