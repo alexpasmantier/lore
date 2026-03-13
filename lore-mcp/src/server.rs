@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct QueryMemoryParams {
-    /// What to search for
+    /// Semantic search query — what to search for
     pub topic: String,
-    /// Zoom level (0=overview, deeper=more detail)
+    /// Depth level filter: 0=topics, 1=concepts, 2=facts, 3+=details. Only returns fragments at this exact depth.
     #[serde(default = "default_depth")]
     pub depth: u32,
     /// Max results to return
@@ -24,12 +24,12 @@ pub struct QueryMemoryParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ExploreMemoryParams {
-    /// The topic to explore
+    /// Semantic search query — finds the best-matching topic to root the tree
     pub topic: String,
-    /// How many levels deep to show
+    /// How many hierarchy levels to expand below the root (default: 2)
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
-    /// Max number of topic trees to return
+    /// Max number of separate topic trees to return (default: 3)
     #[serde(default = "default_explore_limit")]
     pub limit: usize,
 }
@@ -219,9 +219,11 @@ impl MemoryServer {
 
 #[tool_router]
 impl MemoryServer {
-    /// Search long-term memory for knowledge about a topic. Returns fragments at
-    /// the specified zoom level (0=rich overviews, deeper=more detail).
-    /// Start at depth 0 for self-contained summaries, drill deeper as needed.
+    /// Flat semantic search across memory. Returns individual fragments ranked by
+    /// relevance to the query, filtered to a single depth level.
+    /// Use depth 0 for topic-level overviews, depth 1 for concepts, depth 2+ for details.
+    /// Unlike explore_memory, this does NOT return hierarchical trees — just a flat ranked list.
+    /// Best for: broad searches when you don't know which topic contains the answer.
     #[tool(name = "query_memory")]
     async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
         self.with_db(|db| {
@@ -246,8 +248,10 @@ impl MemoryServer {
         })
     }
 
-    /// Get a zoom-tree view of a knowledge area. Returns a hierarchical tree
-    /// starting from the best matching topic, with each level drilling deeper into detail.
+    /// Hierarchical tree view of a knowledge area. Finds the best-matching topic
+    /// and returns it with all its children expanded up to max_depth levels.
+    /// Unlike query_memory (flat list at one depth), this fans out the full subtree.
+    /// Best for: drilling into a known topic to see everything stored under it.
     #[tool(name = "explore_memory")]
     async fn explore_memory(&self, Parameters(params): Parameters<ExploreMemoryParams>) -> String {
         self.with_db(|db| {
@@ -362,8 +366,9 @@ impl MemoryServer {
         })
     }
 
-    /// List top-level knowledge domains in memory. Supports pagination (limit/offset)
-    /// and keyword filtering. Returns topics sorted by relevance.
+    /// Table of contents: lists all top-level topics (depth 0) in memory.
+    /// Use this first to see what knowledge domains exist before querying or exploring.
+    /// Supports pagination (limit/offset) and keyword filtering. Sorted by relevance.
     #[tool(name = "list_topics")]
     async fn list_topics(&self, Parameters(params): Parameters<ListTopicsParams>) -> String {
         self.with_db(|db| {
@@ -464,9 +469,16 @@ impl MemoryServer {
 impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Lore: Persistent memory for AI agents. \
-                 Query knowledge at different zoom levels (0=overview, deeper=more detail). \
-                 Start with list_topics or query_memory at depth 0, then drill deeper.",
+            "Lore: Persistent memory for AI agents.\n\
+             Recommended workflow:\n\
+             1. list_topics — see what knowledge domains exist (table of contents)\n\
+             2. explore_memory — drill into a topic to see its full subtree (hierarchical)\n\
+             3. query_memory — broad semantic search across all fragments at a given depth (flat ranked list)\n\
+             4. traverse_memory — navigate from a specific fragment to its children, parent, or associations\n\n\
+             Key distinction: query_memory returns a flat list filtered by depth level. \
+             explore_memory returns a tree rooted at the best match with children expanded. \
+             Use query_memory when you don't know where to look; use explore_memory when you want \
+             to see everything under a known topic.",
         )
     }
 }
