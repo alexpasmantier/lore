@@ -291,13 +291,14 @@ fn run_ingestion_pass(
     Ok(())
 }
 
-/// Check if a daemon process is already running (owns the status file).
-fn daemon_is_running() -> bool {
-    if let Some(s) = status::read_status() {
-        let pid = s.pid as i32;
-        pid > 0 && pid != std::process::id() as i32 && unsafe { libc::kill(pid, 0) } == 0
+/// Read the daemon's PID from the PID file, if it's still alive.
+fn running_daemon_pid() -> Option<u32> {
+    let pid_str = std::fs::read_to_string(pid_file()).ok()?;
+    let pid: i32 = pid_str.trim().parse().ok()?;
+    if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+        Some(pid as u32)
     } else {
-        false
+        None
     }
 }
 
@@ -310,13 +311,13 @@ async fn run_single_ingest(config: Config) -> Result<(), Box<dyn std::error::Err
     let db = LoreDb::new(storage);
     let watcher = FileWatcher::new();
 
-    let daemon_running = daemon_is_running();
-    if !daemon_running {
-        status::write_status(status::DaemonState::Ingesting);
-    }
+    let daemon_pid = running_daemon_pid();
+    status::write_status(status::DaemonState::Ingesting);
     let result = run_ingestion_pass(&db, &watcher);
-    if !daemon_running {
-        status::clear_status();
+    // Restore daemon's Idle status or clear if no daemon
+    match daemon_pid {
+        Some(pid) => status::write_status_for_pid(status::DaemonState::Idle, pid),
+        None => status::clear_status(),
     }
     result?;
     tracing::info!("Single ingestion pass complete.");
@@ -332,13 +333,12 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
         config.ingestion.claude_model.clone(),
     );
 
-    let daemon_running = daemon_is_running();
-    if !daemon_running {
-        status::write_status(status::DaemonState::Consolidating);
-    }
+    let daemon_pid = running_daemon_pid();
+    status::write_status(status::DaemonState::Consolidating);
     let result = consolidation::run_consolidation(&db, Some(&client), &config.consolidation).await;
-    if !daemon_running {
-        status::clear_status();
+    match daemon_pid {
+        Some(pid) => status::write_status_for_pid(status::DaemonState::Idle, pid),
+        None => status::clear_status(),
     }
     result?;
     tracing::info!("Single consolidation pass complete.");

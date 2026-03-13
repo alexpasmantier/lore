@@ -36,6 +36,18 @@ pub fn write_status(state: DaemonState) {
     }
 }
 
+/// Write status on behalf of another process (e.g. restoring daemon's Idle state).
+pub fn write_status_for_pid(state: DaemonState, pid: u32) {
+    let status = DaemonStatus {
+        state,
+        pid,
+        updated_at: now_unix(),
+    };
+    if let Ok(json) = serde_json::to_string(&status) {
+        let _ = std::fs::write(status_file(), json);
+    }
+}
+
 pub fn read_status() -> Option<DaemonStatus> {
     let content = std::fs::read_to_string(status_file()).ok()?;
     serde_json::from_str(&content).ok()
