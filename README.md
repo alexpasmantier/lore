@@ -1,12 +1,12 @@
 # engram
 
-Brain-inspired persistent memory for AI agents. Memories decay over time following the Ebbinghaus forgetting curve, strengthen when accessed (reconsolidation), and are weighted by importance. A background daemon ingests conversations and distills knowledge into a semantic graph, while periodic consolidation merges related concepts, resolves contradictions, and prunes truly forgotten fragments — like sleep consolidation in the brain.
+Persistent memory for AI agents. Engram gives agents long-term recall that works the way memory should — important things stick, unused knowledge fades, and revisiting something strengthens it.
 
-The resulting knowledge graph is exposed to agents via [MCP](https://modelcontextprotocol.io) tools.
+A background daemon watches your conversations, distills them into a hierarchical knowledge graph, and periodically consolidates it: merging duplicates, resolving contradictions, and letting stale fragments fade away. Agents access the graph through [MCP](https://modelcontextprotocol.io) tools.
 
 ## How it works
 
-Engram organizes knowledge as a hierarchy of increasing specificity:
+Knowledge is organized as a hierarchy of increasing specificity — a zoom-tree where every node is self-contained and children elaborate on their parent:
 
 | Depth | Role | Example |
 |-------|------|---------|
@@ -15,67 +15,72 @@ Engram organizes knowledge as a hierarchy of increasing specificity:
 | 2 | **Fact** | "tokio uses work-stealing scheduler" |
 | 3+ | **Detail** | "`#[tokio::main(flavor = \"multi_thread\")]` for CPU-bound" |
 
-Agents query this hierarchy at different zoom levels — start broad, drill deeper as needed.
+Agents start broad and drill deeper as needed.
 
-### Brain-inspired properties
+### Memory dynamics
 
-- **Forgetting curve**: Relevance decays exponentially over time. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`
-- **Reconsolidation on recall**: Querying a memory reinforces it (resets decay timer) and spreads activation to connected neighbors
-- **Importance weighting**: Fragments are classified high/medium/low at ingestion. High-importance memories decay slower and maintain a higher relevance floor
-- **Blended ranking**: Query results are scored as `0.7 * semantic_similarity + 0.3 * relevance_score`, so stale memories rank lower even if semantically relevant
-- **True forgetting**: Fragments below the relevance threshold (0.05) become invisible to queries. During consolidation, fragments with negligible relevance are permanently pruned
+Engram models memory as something alive rather than a static store:
+
+**Decay** — Every fragment has a relevance score that drops exponentially over time (Ebbinghaus forgetting curve). Old, unaccessed knowledge ranks lower and eventually becomes invisible to queries. Fragments with negligible relevance are permanently pruned during consolidation.
+
+**Reinforcement** — Querying a fragment resets its decay timer and spreads a small activation boost to its neighbors. Frequently accessed knowledge stays fresh. Each additional access strengthens the memory, but with diminishing returns (spacing effect).
+
+**Importance** — At ingestion, each fragment is classified as high, medium, or low importance. This controls both the decay rate (important memories fade slower) and the relevance floor (critical knowledge never fully vanishes, even if never accessed).
+
+**Blended ranking** — Results are scored as 70% semantic similarity + 30% relevance, so a perfect semantic match that hasn't been touched in months ranks below a good match that was recently reinforced.
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────┐
-│                 Claude Code Agent               │
-│         (queries memory via MCP tools)          │
-└──────────┬─────────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│            Claude Code Agent            │
+└──────────┬──────────────────────────────┘
            │ stdio (JSON-RPC)
            ▼
-┌──────────────────────┐    ┌─────────────────────┐
-│   engram-mcp         │    │   engram-daemon      │
-│   (MCP Server)       │    │   (Background)       │
-│                      │    │                      │
-│  query_memory        │    │  Ingestion           │
-│  explore_memory      │    │  (polls conversations│
-│  traverse_memory     │    │   extracts knowledge │
-│  store_memory        │    │   + importance via   │
-│  list_topics         │    │   Claude API)        │
-│                      │    │                      │
-│  Results include     │    │  Consolidation       │
-│  relevance scores    │    │  (7 phases: decay,   │
-│                      │    │   merge, link, resum │
-│                      │    │   contradict, prune  │
-│                      │    │   edges, prune frags)│
-└──────────┬───────────┘    └──────────┬──────────┘
-           │ read                      │ read/write
-           ▼                           ▼
-      ┌─────────────────────────────────────┐
-      │          ~/.engram/memory.db         │
-      │          (SQLite + WAL mode)         │
-      │                                      │
-      │  Fragments (nodes with embeddings,   │
-      │    importance, relevance, decay)     │
-      │  Edges (hierarchical, associative,   │
-      │    temporal, supersedes)             │
-      └─────────────────────────────────────┘
+┌──────────────────┐    ┌─────────────────┐
+│   engram-mcp     │    │  engram-daemon   │
+│   (MCP server)   │    │  (background)    │
+│                  │    │                  │
+│  5 query/store   │    │  Ingestion loop  │
+│  tools for       │    │  Consolidation   │
+│  agents          │    │  (7 phases)      │
+└────────┬─────────┘    └────────┬────────┘
+         │ read                  │ read/write
+         ▼                      ▼
+    ┌──────────────────────────────────┐
+    │       ~/.engram/memory.db        │
+    │       (SQLite + WAL mode)        │
+    │                                  │
+    │  Fragments · Edges · Watermarks  │
+    └──────────────────────────────────┘
 ```
 
-**Three crates:**
+**Crates:**
 
-- **engram-db** — Core graph database. SQLite backend with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`).
-- **engram-mcp** — MCP server over stdio. Exposes 5 tools for querying and storing knowledge.
-- **engram-daemon** — Background process that ingests `~/.claude/projects/` conversation logs, extracts knowledge with importance classification via Claude API, and periodically consolidates the graph (recomputing relevance scores, merging near-duplicate topics, creating associative links, resolving contradictions, decaying edge weights, and pruning forgotten fragments).
+- **engram-db** — Core library. SQLite storage with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`). Relevance scoring, reconsolidation, spreading activation.
+- **engram-mcp** — MCP server over stdio (`rmcp`). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
+- **engram-daemon** — Background process. Polls `~/.claude/projects/` for conversation logs, extracts knowledge with importance classification via Claude API, and runs 7-phase consolidation (relevance decay, topic merging, associative linking, re-summarization, contradiction resolution, edge pruning, fragment pruning).
+- **engram-plugin** — Claude Code plugin with `/recall` and `/remember` slash commands.
 
-Plus **engram-plugin** — a Claude Code plugin with `/recall` and `/remember` commands.
+### Consolidation phases
+
+Consolidation runs periodically (default: every 2 hours) and walks the entire graph:
+
+| Phase | Name | What it does |
+|-------|------|-------------|
+| 0 | Relevance recomputation | Recomputes all relevance scores based on time decay |
+| 1 | Topic merging | Merges near-duplicate topics (similarity > 0.9) |
+| 2 | Associative linking | Creates cross-topic edges between related concepts |
+| 3 | Re-summarization | Regenerates topic overviews when children have changed |
+| 4 | Contradiction resolution | Detects and supersedes contradictory sibling fragments |
+| 5 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
+| 6 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
 
 ## Install
 
 ```sh
 cargo build --release -p engram-mcp -p engram-daemon
-cp target/release/engram-{mcp,daemon} ~/.local/bin/
+cp target/release/engram-mcp target/release/engram-daemon ~/.local/bin/
 ```
 
 Register the MCP server (user-level, all sessions):
@@ -86,28 +91,30 @@ claude mcp add --scope user memory -- engram-mcp
 
 ## Usage
 
-### MCP tools (used by agents automatically)
+### MCP tools
 
 | Tool | Description |
 |------|-------------|
-| `query_memory` | Semantic search at a given depth level. Results ranked by blended semantic + relevance score. Accessing results reinforces them. |
-| `explore_memory` | Get a subtree view of a knowledge area |
+| `query_memory` | Search at a given depth. Returns results ranked by semantic + relevance score. |
+| `explore_memory` | Subtree view of a knowledge area |
 | `traverse_memory` | Navigate children, parent, or associations of a fragment |
 | `store_memory` | Explicitly store a piece of knowledge |
-| `list_topics` | List all top-level knowledge domains, sorted by relevance |
+| `list_topics` | List all top-level topics, sorted by relevance |
 
 ### Daemon
 
 ```sh
-engram-daemon start          # run in foreground
-engram-daemon daemonize      # run in background
+engram-daemon start          # foreground
+engram-daemon daemonize      # background
 engram-daemon ingest         # single ingestion pass
 engram-daemon consolidate    # single consolidation pass
 engram-daemon status         # check if running
 engram-daemon stop           # stop background daemon
 ```
 
-Configuration lives at `~/.engram/config.toml`:
+### Configuration
+
+`~/.engram/config.toml`:
 
 ```toml
 [ingestion]
@@ -118,7 +125,7 @@ claude_model = "claude-sonnet-4-20250514"
 [consolidation]
 interval_secs = 7200
 similarity_threshold = 0.8
-min_relevance_prune = 0.02    # fragments below this relevance may be pruned
+min_relevance_prune = 0.02
 
 [database]
 path = "~/.engram/memory.db"
@@ -128,9 +135,9 @@ path = "~/.engram/memory.db"
 
 ```sh
 cargo build              # build all crates
-cargo test               # run 97 tests across all crates
+cargo test               # 97 tests
 cargo clippy --workspace # lint
 cargo fmt --all          # format
 ```
 
-Tests include unit tests (24 engram-db, 11 daemon, 5 MCP), 30 behavioral tests validating brain-inspired properties (decay, reinforcement, spreading activation, importance, forgetting), and 27 integration scenario tests with fixture conversations covering the full lifecycle from ingestion through consolidation to querying.
+The test suite covers unit tests across all three crates, behavioral tests for memory dynamics (decay curves, reinforcement, spreading activation, importance thresholds, forgetting), and integration scenarios that run fixture conversations through the full pipeline — ingestion, aging, consolidation, querying, and verification.
