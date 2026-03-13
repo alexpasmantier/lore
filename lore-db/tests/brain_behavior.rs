@@ -32,8 +32,7 @@ fn insert_fragment(
 ) -> FragmentId {
     let now = now_unix();
     let created = now - age_days * 86400;
-    let mut frag =
-        Fragment::new_with_importance(content.to_string(), depth, importance);
+    let mut frag = Fragment::new_with_importance(content.to_string(), depth, importance);
     frag.embedding = embedding;
     frag.created_at = created;
     frag.last_accessed = created;
@@ -166,16 +165,7 @@ fn accessing_a_memory_increases_relevance() {
     let db = test_db();
 
     // Insert a 30-day old fragment
-    let id = insert_fragment(
-        &db,
-        "Some knowledge",
-        0,
-        vec![],
-        0.5,
-        30,
-        0,
-        None,
-    );
+    let id = insert_fragment(&db, "Some knowledge", 0, vec![], 0.5, 30, 0, None);
     let before = db.storage().get_fragment(id).unwrap().unwrap();
 
     // Reinforce it (simulating an access)
@@ -385,11 +375,7 @@ fn importance_determines_decay_rate() {
 
 #[test]
 fn fragment_with_importance_gets_correct_decay_rate() {
-    let frag = Fragment::new_with_importance(
-        "Important decision".to_string(),
-        0,
-        0.9,
-    );
+    let frag = Fragment::new_with_importance("Important decision".to_string(), 0, 0.9);
 
     let expected_rate = decay_rate_for_importance(0.9);
     assert!(
@@ -413,8 +399,7 @@ fn very_old_low_importance_fragments_are_candidates_for_pruning() {
 
     // Insert fragments with various ages and importances
     let _fresh = insert_fragment(&db, "Fresh", 1, vec![], 0.5, 0, 0, None);
-    let _old_important =
-        insert_fragment(&db, "Old important", 1, vec![], 0.9, 90, 0, None);
+    let _old_important = insert_fragment(&db, "Old important", 1, vec![], 0.9, 90, 0, None);
     let old_trivial = insert_fragment(&db, "Old trivial", 1, vec![], 0.1, 90, 0, None);
 
     // Recompute relevance
@@ -442,8 +427,8 @@ fn depth_zero_topics_are_never_pruning_candidates() {
     let db = test_db();
     let now = now_unix();
 
-    // Insert an old, low-importance depth-0 topic
-    let _topic = insert_fragment(&db, "Old topic", 0, vec![], 0.1, 120, 0, None);
+    // Insert an old, low-importance depth-0 root
+    let _root = insert_fragment(&db, "Old topic", 0, vec![], 0.1, 120, 0, None);
 
     db.storage().recompute_all_relevance(now).unwrap();
 
@@ -454,7 +439,7 @@ fn depth_zero_topics_are_never_pruning_candidates() {
         .unwrap();
     assert!(
         candidates.iter().all(|f| f.depth > 0),
-        "Depth-0 topics should never be pruning candidates"
+        "Depth-0 roots should never be pruning candidates"
     );
 }
 
@@ -484,7 +469,7 @@ fn superseded_fragments_are_excluded_from_pruning_candidates() {
 #[test]
 fn relevance_modulates_text_query_ordering() {
     // When using the text fallback, results should still respect
-    // the fragment ordering (list_topics sorts by relevance).
+    // the fragment ordering (list_roots sorts by relevance).
     let db = test_db();
     let now = now_unix();
 
@@ -499,26 +484,17 @@ fn relevance_modulates_text_query_ordering() {
         0,
         None,
     );
-    let _fresh = insert_fragment(
-        &db,
-        "Rust programming patterns",
-        0,
-        vec![],
-        0.8,
-        1,
-        5,
-        None,
-    );
+    let _fresh = insert_fragment(&db, "Rust programming patterns", 0, vec![], 0.8, 1, 5, None);
 
     db.storage().recompute_all_relevance(now).unwrap();
 
-    let topics = db.list_topics(None);
-    assert_eq!(topics.len(), 2);
+    let roots = db.list_roots(None);
+    assert_eq!(roots.len(), 2);
     assert!(
-        topics[0].relevance_score >= topics[1].relevance_score,
-        "Topics should be sorted by relevance: {} >= {}",
-        topics[0].relevance_score,
-        topics[1].relevance_score
+        roots[0].relevance_score >= roots[1].relevance_score,
+        "Roots should be sorted by relevance: {} >= {}",
+        roots[0].relevance_score,
+        roots[1].relevance_score
     );
 }
 
@@ -683,10 +659,7 @@ fn query_reinforces_returned_fragments() {
     // reinforced (reconsolidation on recall).
     let db = test_db();
 
-    let mut frag = Fragment::new(
-        "Rust async patterns".to_string(),
-        0,
-    );
+    let mut frag = Fragment::new("Rust async patterns".to_string(), 0);
     frag.embedding = vec![0.1; 384];
     db.storage().insert_fragment(&frag).unwrap();
     let original_access = frag.access_count;
@@ -721,10 +694,10 @@ fn superseded_fragments_dont_appear_in_queries() {
 
     db.supersede(old.id, new.id).unwrap();
 
-    let topics = db.list_topics(None);
+    let roots = db.list_roots(None);
     assert!(
-        !topics.iter().any(|t| t.id == old.id),
-        "Superseded fragment should not appear in list_topics"
+        !roots.iter().any(|t| t.id == old.id),
+        "Superseded fragment should not appear in list_roots"
     );
 }
 
@@ -891,7 +864,7 @@ fn lifecycle_important_vs_trivial_over_time() {
 #[test]
 fn lifecycle_knowledge_graph_with_mixed_ages() {
     // Build a realistic knowledge graph with topics of varying ages
-    // and importance, then verify the list_topics ordering makes sense.
+    // and importance, then verify the list_roots ordering makes sense.
     let db = test_db();
     let now = now_unix();
 
@@ -945,18 +918,18 @@ fn lifecycle_knowledge_graph_with_mixed_ages() {
 
     db.storage().recompute_all_relevance(now).unwrap();
 
-    let topics = db.list_topics(None);
-    assert_eq!(topics.len(), 4);
+    let roots = db.list_roots(None);
+    assert_eq!(roots.len(), 4);
 
     // The recent important decision should rank first
     assert_eq!(
-        topics[0].content, "Use SQLite WAL mode for concurrent access",
+        roots[0].content, "Use SQLite WAL mode for concurrent access",
         "Recent important memory should rank first"
     );
 
     // The old trivial observation should rank last
     assert_eq!(
-        topics[3].content, "The CI pipeline takes about 3 minutes",
+        roots[3].content, "The CI pipeline takes about 3 minutes",
         "Old trivial memory should rank last"
     );
 }

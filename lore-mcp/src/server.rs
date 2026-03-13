@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub struct QueryMemoryParams {
     /// Semantic search query — what to search for
     pub topic: String,
-    /// Depth level filter: 0=topics, 1=concepts, 2=facts, 3+=details. Only returns fragments at this exact depth.
+    /// Depth level filter: 0=roots, 1=concepts, 2=facts, 3+=details. Only returns fragments at this exact depth.
     #[serde(default = "default_depth")]
     pub depth: u32,
     /// Max results to return
@@ -24,7 +24,7 @@ pub struct QueryMemoryParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ExploreMemoryParams {
-    /// Semantic search query — finds the best-matching topic to root the tree
+    /// Semantic search query — finds the best-matching root to expand the tree from
     pub topic: String,
     /// How many hierarchy levels to expand below the root (default: 2)
     #[serde(default = "default_max_depth")]
@@ -47,7 +47,7 @@ pub struct StoreMemoryParams {
     /// The knowledge to store
     pub content: String,
     /// Parent fragment ID. If omitted for depth > 0, auto-assigns to the most
-    /// semantically similar existing topic.
+    /// semantically similar existing root.
     pub parent_id: Option<String>,
     /// Abstraction level (0=broad concept, higher=more specific)
     #[serde(default = "default_store_depth")]
@@ -55,14 +55,14 @@ pub struct StoreMemoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListTopicsParams {
-    /// Max number of topics to return (default: 50)
+pub struct ListRootsParams {
+    /// Max number of roots to return (default: 50)
     #[serde(default = "default_list_limit")]
     pub limit: usize,
-    /// Number of topics to skip (for pagination)
+    /// Number of roots to skip (for pagination)
     #[serde(default)]
     pub offset: usize,
-    /// Optional keyword filter — only return topics whose content matches
+    /// Optional keyword filter — only return roots whose content matches
     pub query: Option<String>,
 }
 
@@ -125,7 +125,7 @@ struct TreeResponse {
 }
 
 #[derive(Serialize)]
-struct TopicResponse {
+struct RootResponse {
     id: String,
     content: String,
     child_count: usize,
@@ -212,7 +212,7 @@ impl MemoryServer {
     /// relevance to the query, filtered to a single depth level.
     /// Use depth 0 for topic-level overviews, depth 1 for concepts, depth 2+ for details.
     /// Unlike explore_memory, this does NOT return hierarchical trees — just a flat ranked list.
-    /// Best for: broad searches when you don't know which topic contains the answer.
+    /// Best for: broad searches when you don't know which root contains the answer.
     #[tool(name = "query_memory")]
     async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
         self.with_db(|db| {
@@ -237,10 +237,10 @@ impl MemoryServer {
         })
     }
 
-    /// Hierarchical tree view of a knowledge area. Finds the best-matching topic
+    /// Hierarchical tree view of a knowledge area. Finds the best-matching root
     /// and returns it with all its children expanded up to max_depth levels.
     /// Unlike query_memory (flat list at one depth), this fans out the full subtree.
-    /// Best for: drilling into a known topic to see everything stored under it.
+    /// Best for: drilling into a known root to see everything stored under it.
     #[tool(name = "explore_memory")]
     async fn explore_memory(&self, Parameters(params): Parameters<ExploreMemoryParams>) -> String {
         self.with_db(|db| {
@@ -302,7 +302,7 @@ impl MemoryServer {
     /// Explicitly store a piece of knowledge in long-term memory. Provide the
     /// content, an optional parent ID, and depth level (0=broad concept, higher=more specific).
     /// If no parent_id is given and depth > 0, automatically assigns to the most
-    /// semantically similar existing topic.
+    /// semantically similar existing root.
     #[tool(name = "store_memory")]
     async fn store_memory(&self, Parameters(params): Parameters<StoreMemoryParams>) -> String {
         let explicit_parent = match params.parent_id {
@@ -314,7 +314,7 @@ impl MemoryServer {
         };
 
         self.with_db(|db| {
-            // Auto-classify: if depth > 0 and no explicit parent, find best matching topic
+            // Auto-classify: if depth > 0 and no explicit parent, find best matching root
             let parent_id = if explicit_parent.is_some() {
                 explicit_parent
             } else if params.depth > 0 {
@@ -346,39 +346,39 @@ impl MemoryServer {
         })
     }
 
-    /// Table of contents: lists all top-level topics (depth 0) in memory.
+    /// Table of contents: lists all root-level fragments (depth 0) in memory.
     /// Use this first to see what knowledge domains exist before querying or exploring.
     /// Supports pagination (limit/offset) and keyword filtering. Sorted by relevance.
-    #[tool(name = "list_topics")]
-    async fn list_topics(&self, Parameters(params): Parameters<ListTopicsParams>) -> String {
+    #[tool(name = "list_roots")]
+    async fn list_roots(&self, Parameters(params): Parameters<ListRootsParams>) -> String {
         self.with_db(|db| {
-            let topics = db.list_topics(params.query.as_deref());
+            let roots = db.list_roots(params.query.as_deref());
 
-            if topics.is_empty() {
+            if roots.is_empty() {
                 return if params.query.is_some() {
                     format!(
-                        "No topics matching '{}' found.",
+                        "No roots matching '{}' found.",
                         params.query.as_deref().unwrap_or("")
                     )
                 } else {
-                    "No topics in memory yet.".to_string()
+                    "No roots in memory yet.".to_string()
                 };
             }
 
-            let total = topics.len();
+            let total = roots.len();
 
             // Apply pagination
-            let page: Vec<_> = topics
+            let page: Vec<_> = roots
                 .into_iter()
                 .skip(params.offset)
                 .take(params.limit)
                 .collect();
 
-            let response: Vec<TopicResponse> = page
+            let response: Vec<RootResponse> = page
                 .iter()
                 .map(|t| {
                     let child_count = db.children(t.id).len();
-                    TopicResponse {
+                    RootResponse {
                         id: t.id.to_string(),
                         content: t.content.clone(),
                         child_count,
@@ -392,7 +392,7 @@ impl MemoryServer {
                 "total": total,
                 "offset": params.offset,
                 "limit": params.limit,
-                "topics": response,
+                "roots": response,
             });
 
             serde_json::to_string_pretty(&result)
@@ -449,14 +449,14 @@ impl ServerHandler for MemoryServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Lore: Persistent memory for AI agents.\n\
              Recommended workflow:\n\
-             1. list_topics — see what knowledge domains exist (table of contents)\n\
-             2. explore_memory — drill into a topic to see its full subtree (hierarchical)\n\
+             1. list_roots — see what knowledge domains exist (table of contents)\n\
+             2. explore_memory — drill into a root to see its full subtree (hierarchical)\n\
              3. query_memory — broad semantic search across all fragments at a given depth (flat ranked list)\n\
              4. traverse_memory — navigate from a specific fragment to its children, parent, or associations\n\n\
              Key distinction: query_memory returns a flat list filtered by depth level. \
              explore_memory returns a tree rooted at the best match with children expanded. \
              Use query_memory when you don't know where to look; use explore_memory when you want \
-             to see everything under a known topic.",
+             to see everything under a known root.",
         )
     }
 }
@@ -469,10 +469,7 @@ mod tests {
     fn seed_test_db(server: &MemoryServer) {
         let db = server.db.lock().unwrap();
 
-        let topic = Fragment::new(
-            "Rust programming language".to_string(),
-            0,
-        );
+        let topic = Fragment::new("Rust programming language".to_string(), 0);
         db.storage().insert_fragment(&topic).unwrap();
 
         let concept = Fragment::new(
@@ -509,12 +506,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_topics() {
+    async fn test_list_roots() {
         let server = MemoryServer::new_in_memory().unwrap();
         seed_test_db(&server);
 
         let result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 50,
                 offset: 0,
                 query: None,
@@ -560,7 +557,7 @@ mod tests {
 
         let topic_id = {
             let db = server.db.lock().unwrap();
-            let topics = db.list_topics(None);
+            let topics = db.list_roots(None);
             topics[0].id.to_string()
         };
 
@@ -587,23 +584,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_topics_with_query_filter() {
+    async fn test_list_roots_with_query_filter() {
         let server = MemoryServer::new_in_memory().unwrap();
         seed_test_db(&server);
 
         // Store a second topic
         {
             let db = server.db.lock().unwrap();
-            let topic2 = Fragment::new(
-                "Python programming language".to_string(),
-                0,
-            );
+            let topic2 = Fragment::new("Python programming language".to_string(), 0);
             db.storage().insert_fragment(&topic2).unwrap();
         }
 
         // Filter by "Python" should only return Python
         let result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 50,
                 offset: 0,
                 query: Some("Python".to_string()),
@@ -618,22 +612,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_topics_pagination() {
+    async fn test_list_roots_pagination() {
         let server = MemoryServer::new_in_memory().unwrap();
         {
             let db = server.db.lock().unwrap();
             for i in 0..5 {
-                let t = Fragment::new(
-                    format!("Topic {i} content"),
-                    0,
-                );
+                let t = Fragment::new(format!("Topic {i} content"), 0);
                 db.storage().insert_fragment(&t).unwrap();
             }
         }
 
         // Get first 2
         let result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 2,
                 offset: 0,
                 query: None,
@@ -641,18 +632,18 @@ mod tests {
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["total"], 5);
-        assert_eq!(parsed["topics"].as_array().unwrap().len(), 2);
+        assert_eq!(parsed["roots"].as_array().unwrap().len(), 2);
 
         // Get next 2
         let result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 2,
                 offset: 2,
                 query: None,
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["topics"].as_array().unwrap().len(), 2);
+        assert_eq!(parsed["roots"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -679,7 +670,7 @@ mod tests {
 
         // Verify it's gone
         let list_result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 50,
                 offset: 0,
                 query: None,
@@ -712,7 +703,7 @@ mod tests {
 
         // Verify content changed
         let list_result = server
-            .list_topics(Parameters(ListTopicsParams {
+            .list_roots(Parameters(ListRootsParams {
                 limit: 50,
                 offset: 0,
                 query: None,

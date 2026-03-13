@@ -12,7 +12,7 @@
 
 ## Architecture
 - **lore-db**: Core library. Persistent memory database with SQLite backend + fastembed embeddings (all-MiniLM-L6-v2, 384-dim).
-- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_topics`.
+- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 5 tools: `query_memory`, `explore_memory`, `traverse_memory`, `store_memory`, `list_roots`.
 - **lore-daemon**: Background process. Two-phase pipeline: ingestion stages raw conversation turns from `~/.claude/projects/` into SQLite (fast, no API calls); consolidation digests idle sessions with full context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Writes `~/.lore/daemon.status` (JSON) to broadcast current activity state.
 - **lore-tray**: Desktop app (HAL 9000 style tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
@@ -33,7 +33,7 @@
 - **Importance weighting**: Fragments are scored high/medium/low at extraction. Importance controls decay rate (high=slow, low=fast) and relevance floor.
 - **Blended query ranking**: `score = 0.7 * semantic_similarity + 0.3 * relevance_score`. Stale fragments rank lower.
 - **Forgetting**: Fragments below relevance threshold (0.05) are invisible to queries. During consolidation, truly forgotten fragments (relevance < 0.02, age > 60d, never accessed) are pruned.
-- **Topic merging**: Topics above `merge_threshold` (default 0.85) are merged during consolidation. The survivor is the more-accessed topic; the victim's children are reparented.
+- **Root merging**: Roots above `merge_threshold` (default 0.85) are merged during consolidation. The survivor is the more-accessed root; the victim's children are reparented.
 - **Contradiction resolution**: Sibling pairs are batch-checked (up to 10 per API call) for contradictions. The older fragment is superseded.
 - **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
 - **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
@@ -51,9 +51,9 @@
 - Fragment columns include `importance` (f32), `relevance_score` (f32), `decay_rate` (f32), `last_reinforced` (i64). Schema auto-migrates via `migrate_v2()`.
 - Ingestion stages raw turns into `staged_turns` table (no Claude calls). Consolidation Phase 0 digests idle sessions (default 5 min threshold) with full conversation context. Large conversations are chunked at `max_turns_per_extraction` (default 200).
 - Consolidation Phase 1 recomputes all relevance scores (sleep cycle). Phase 7 prunes forgotten fragments.
-- Extraction prompt includes existing topic content (200 char preview) and children summaries to reduce duplicate topic creation.
+- Extraction prompt includes existing root content (200 char preview) and children content to reduce duplicate root creation.
 - Cross-platform paths via `dirs` crate. Shared `lore_home()` helper in `lore-db`. Never use raw `$HOME`.
-- MCP tools `query_memory`, `explore_memory`, and `list_topics` accept a `limit` parameter to control result count.
+- MCP tools `query_memory`, `explore_memory`, and `list_roots` accept a `limit` parameter to control result count.
 
 ## Key Dependencies
 - `rmcp` 1.2 — MCP server SDK. Uses `#[tool_router]` + `#[tool_handler]` macro pattern. Needs `schemars` 1.x (not 0.8).

@@ -27,40 +27,37 @@ fn open_live_db() -> LoreDb {
 #[ignore]
 fn live_schema_has_v2_columns() {
     let db = open_live_db();
-    let topics = db.list_topics(None);
-    assert!(
-        !topics.is_empty(),
-        "Should have topics in the live database"
-    );
+    let roots = db.list_roots(None);
+    assert!(!roots.is_empty(), "Should have roots in the live database");
 
     // V2 columns should be readable
-    let first = &topics[0];
+    let first = &roots[0];
     assert!(first.importance >= 0.0 && first.importance <= 1.0);
     assert!(first.relevance_score >= 0.0 && first.relevance_score <= 1.0);
     assert!(first.decay_rate > 0.0);
     println!(
-        "First topic: '{}' importance={:.2} relevance={:.4} decay_rate={:.4}",
+        "First root: '{}' importance={:.2} relevance={:.4} decay_rate={:.4}",
         first.content, first.importance, first.relevance_score, first.decay_rate
     );
 }
 
 #[test]
 #[ignore]
-fn live_topics_sorted_by_relevance() {
+fn live_roots_sorted_by_relevance() {
     let db = open_live_db();
-    let topics = db.list_topics(None);
+    let roots = db.list_roots(None);
 
-    for i in 1..topics.len() {
+    for i in 1..roots.len() {
         assert!(
-            topics[i - 1].relevance_score >= topics[i].relevance_score,
-            "Topics should be sorted by relevance descending: {} ({:.4}) vs {} ({:.4})",
-            topics[i - 1].content,
-            topics[i - 1].relevance_score,
-            topics[i].content,
-            topics[i].relevance_score,
+            roots[i - 1].relevance_score >= roots[i].relevance_score,
+            "Roots should be sorted by relevance descending: {} ({:.4}) vs {} ({:.4})",
+            roots[i - 1].content,
+            roots[i - 1].relevance_score,
+            roots[i].content,
+            roots[i].relevance_score,
         );
     }
-    println!("All {} topics correctly sorted by relevance", topics.len());
+    println!("All {} roots correctly sorted by relevance", roots.len());
 }
 
 #[test]
@@ -73,11 +70,11 @@ fn live_decay_recomputation() {
     println!("Recomputed relevance for {} fragments", count);
     assert!(count > 0, "Should have recomputed at least some fragments");
 
-    // After recomputation, topics should still be sorted
-    let topics = db.list_topics(None);
-    for i in 1..topics.len() {
+    // After recomputation, roots should still be sorted
+    let roots = db.list_roots(None);
+    for i in 1..roots.len() {
         assert!(
-            topics[i - 1].relevance_score >= topics[i].relevance_score,
+            roots[i - 1].relevance_score >= roots[i].relevance_score,
             "Should remain sorted after recomputation"
         );
     }
@@ -89,9 +86,9 @@ fn live_reinforcement_on_access() {
     let db = open_live_db();
     let now = now_unix();
 
-    // Pick a topic to reinforce
-    let topics = db.list_topics(None);
-    let target = &topics[topics.len() - 1]; // pick the least relevant
+    // Pick a root to reinforce
+    let roots = db.list_roots(None);
+    let target = &roots[roots.len() - 1]; // pick the least relevant
     let before_rel = target.relevance_score;
     let before_access = target.access_count;
 
@@ -135,18 +132,18 @@ fn live_spreading_activation() {
     let db = open_live_db();
     let now = now_unix();
 
-    // Find a topic with children
-    let topics = db.list_topics(None);
-    let topic_with_children = topics.iter().find(|t| !db.children(t.id).is_empty());
+    // Find a root with children
+    let roots = db.list_roots(None);
+    let root_with_children = roots.iter().find(|t| !db.children(t.id).is_empty());
 
-    if let Some(topic) = topic_with_children {
-        let children = db.children(topic.id);
+    if let Some(root) = root_with_children {
+        let children = db.children(root.id);
         let child = &children[0];
         let before = child.relevance_score;
 
         println!(
             "Boosting child '{}' of '{}' (relevance before: {:.4})",
-            child.content, topic.content, before
+            child.content, root.content, before
         );
 
         // Boost the child (spreading activation)
@@ -160,7 +157,7 @@ fn live_spreading_activation() {
             "Boost should not decrease relevance"
         );
     } else {
-        println!("No topics with children found — skipping");
+        println!("No roots with children found — skipping");
     }
 }
 
@@ -168,9 +165,9 @@ fn live_spreading_activation() {
 #[ignore]
 fn live_print_relevance_distribution() {
     let db = open_live_db();
-    let topics = db.list_topics(None);
+    let roots = db.list_roots(None);
 
-    println!("\n=== Topic Relevance Distribution ===\n");
+    println!("\n=== Root Relevance Distribution ===\n");
     println!(
         "{:<60} {:>6} {:>5} {:>8}",
         "Summary", "Rel", "Acc", "Age(d)"
@@ -178,7 +175,7 @@ fn live_print_relevance_distribution() {
     println!("{}", "-".repeat(85));
 
     let now = now_unix();
-    for t in &topics {
+    for t in &roots {
         let age_days = (now - t.created_at) / 86400;
         println!(
             "{:<60} {:.3}  {:>4}  {:>5}",
@@ -189,5 +186,5 @@ fn live_print_relevance_distribution() {
         );
     }
 
-    println!("\nTotal topics: {}", topics.len());
+    println!("\nTotal roots: {}", roots.len());
 }

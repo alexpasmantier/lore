@@ -2,7 +2,7 @@
 
 Empirical memory for AI agents. Lore builds a centralized knowledge base from experience — it watches past conversations across all sessions and projects, extracts what was learned, and organizes it into a hierarchical graph that any agent can query. Knowledge accumulated in one context is available to every future agent. Over time, a background consolidation process merges duplicates, resolves contradictions, and lets unused knowledge fade.
 
-Agents query the graph through [MCP](https://modelcontextprotocol.io) tools: semantic search at any zoom level, tree exploration to drill from high-level topics into specifics, lateral traversal across associative links, and direct storage for explicit knowledge. Queries blend semantic similarity with a time-decaying relevance score — frequently accessed and recent knowledge surfaces first, while stale fragments naturally fade.
+Agents query the graph through [MCP](https://modelcontextprotocol.io) tools: semantic search at any zoom level, tree exploration to drill from broad concepts into specifics, lateral traversal across associative links, and direct storage for explicit knowledge. Queries blend semantic similarity with a time-decaying relevance score — frequently accessed and recent knowledge surfaces first, while stale fragments naturally fade.
 
 ## How it works
 
@@ -70,9 +70,9 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 |-------|------|-------------|
 | 0 | Digestion | Extracts knowledge from idle staged conversations (full context) |
 | 1 | Relevance recomputation | Recomputes all relevance scores based on time decay |
-| 2 | Topic merging | Merges near-duplicate topics (configurable threshold, default 0.85) |
-| 3 | Associative linking | Creates cross-topic edges between related concepts |
-| 4 | Re-summarization | Regenerates topic overviews when children have changed |
+| 2 | Root merging | Merges near-duplicate roots (configurable threshold, default 0.85) |
+| 3 | Associative linking | Creates cross-branch edges between related concepts |
+| 4 | Re-summarization | Regenerates root overviews when children have changed |
 | 5 | Contradiction resolution | Batch-checks sibling pairs for contradictions, supersedes the older one |
 | 6 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
 | 7 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
@@ -145,7 +145,7 @@ The context menu shows the current version and status, and provides controls to:
 | `explore_memory` | Subtree view of a knowledge area. `limit` controls how many trees (default 3). |
 | `traverse_memory` | Navigate children, parent, or associations of a fragment. |
 | `store_memory` | Explicitly store a piece of knowledge. |
-| `list_topics` | List top-level topics, sorted by relevance. Optional `limit`. |
+| `list_roots` | List root-level fragments (highest abstraction), sorted by relevance. Optional `limit`. |
 
 ### Daemon CLI
 
@@ -158,6 +158,10 @@ lore-daemon ingest         # stage new conversation turns
 lore-daemon consolidate    # digest staged turns + run consolidation
 lore-daemon status         # check if running
 lore-daemon stop           # stop background daemon
+lore-daemon roots          # list root-level fragments
+lore-daemon query "text"   # semantic search
+lore-daemon explore <id>   # show subtree (supports ID prefix)
+lore-daemon staged         # show staging area
 ```
 
 ### Configuration

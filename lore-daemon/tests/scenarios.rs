@@ -6,7 +6,7 @@
 
 use lore_daemon::config::ConsolidationConfig;
 use lore_daemon::consolidation;
-use lore_daemon::ingestion::{ExtractedKnowledge, ExtractedNode, ExtractedTopicEntry};
+use lore_daemon::ingestion::{ExtractedEntry, ExtractedKnowledge, ExtractedNode};
 use lore_daemon::parser::parse_jsonl_line;
 use lore_db::edge::EdgeKind;
 use lore_db::fragment::{now_unix, Fragment};
@@ -53,7 +53,7 @@ const CONVERSATION_TOOL_ONLY: &str = r#"{"type":"assistant","message":{"role":"a
 
 fn extraction_rust_errors() -> ExtractedKnowledge {
     ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: None,
             content: "Rust error handling architecture: For library code, use thiserror to define structured error types with \
                       specific variants callers can match on. For application code, use anyhow \
@@ -76,7 +76,7 @@ fn extraction_rust_errors() -> ExtractedKnowledge {
 
 fn extraction_debugging() -> ExtractedKnowledge {
     ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: None,
             content: "RefCell vs Mutex usage: User correction: Don't use Mutex for single-threaded code. RefCell is \
                       appropriate for single-threaded interior mutability. When encountering \
@@ -99,7 +99,7 @@ fn extraction_debugging() -> ExtractedKnowledge {
 
 fn extraction_async_patterns() -> ExtractedKnowledge {
     ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: None,
             content: "Tokio graceful shutdown pattern: Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
                       Main loop selects on work and shutdown signal. Finish current work items \
@@ -129,7 +129,7 @@ fn extraction_async_patterns() -> ExtractedKnowledge {
 }
 
 fn extraction_chatter() -> ExtractedKnowledge {
-    ExtractedKnowledge { topics: vec![] }
+    ExtractedKnowledge { roots: vec![] }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -248,8 +248,8 @@ fn multi_session_creates_correct_topic_hierarchy() {
     let db = test_db();
     ingest_all(&db);
 
-    let topics = db.list_topics(None);
-    // 3 topics: Rust error handling, RefCell vs Mutex, Tokio shutdown
+    let topics = db.list_roots(None);
+    // 3 roots: Rust error handling, RefCell vs Mutex, Tokio shutdown
     // (chatter session extracts nothing)
     assert_eq!(
         topics.len(),
@@ -263,7 +263,7 @@ fn children_are_stored_with_correct_depth() {
     let db = test_db();
     ingest_all(&db);
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     for topic in &topics {
         assert_eq!(topic.depth, 0, "Topics should be at depth 0");
         let children = db.children(topic.id);
@@ -278,7 +278,7 @@ fn importance_is_set_correctly_from_extraction() {
     let db = test_db();
     lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("test")).unwrap();
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let topic = &topics[0];
     // "high" importance → 0.9
     assert!(
@@ -302,7 +302,7 @@ fn temporal_edges_link_sequential_siblings() {
     lore_daemon::ingestion::store_knowledge(&db, &extraction_async_patterns(), Some("test"))
         .unwrap();
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let children = db.children(topics[0].id);
     assert_eq!(
         children.len(),
@@ -337,7 +337,7 @@ fn source_session_is_recorded() {
     )
     .unwrap();
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     assert_eq!(
         topics[0].source_session.as_deref(),
         Some("my-project-abc123"),
@@ -352,7 +352,7 @@ fn empty_extraction_stores_nothing() {
         lore_daemon::ingestion::store_knowledge(&db, &extraction_chatter(), Some("chatter"))
             .unwrap();
     assert_eq!(count, 0);
-    assert_eq!(db.list_topics(None).len(), 0);
+    assert_eq!(db.list_roots(None).len(), 0);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -367,7 +367,7 @@ fn high_importance_memories_survive_months() {
     let now = now_unix();
 
     // Record initial relevance of the high-importance topic
-    let topics_before = db.list_topics(None);
+    let topics_before = db.list_roots(None);
     let high_imp_topic = topics_before
         .iter()
         .find(|t| t.content.contains("Rust error handling architecture"))
@@ -378,7 +378,7 @@ fn high_importance_memories_survive_months() {
     let future = now + 90 * day;
     db.storage().recompute_all_relevance(future).unwrap();
 
-    let topics_after = db.list_topics(None);
+    let topics_after = db.list_roots(None);
     let high_imp_after = topics_after
         .iter()
         .find(|t| t.content.contains("Rust error handling architecture"))
@@ -408,7 +408,7 @@ fn low_importance_children_fade_over_time() {
     let now = now_unix();
 
     // Find the "low" importance child (Shutdown signal handling)
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let children = db.children(topics[0].id);
     let low_child = children
         .iter()
@@ -458,7 +458,7 @@ fn access_rescues_a_fading_memory() {
 
     // Find a medium-importance topic (Tokio shutdown)
     let topic = db
-        .list_topics(None)
+        .list_roots(None)
         .into_iter()
         .find(|t| t.content.contains("Tokio graceful shutdown pattern"))
         .unwrap();
@@ -522,7 +522,7 @@ fn query_reinforces_and_spreads_activation() {
     db.storage().recompute_all_relevance(t30).unwrap();
 
     // Get the Rust error handling topic and its child
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let rust_topic = topics
         .iter()
         .find(|t| t.content.contains("Rust error handling architecture"))
@@ -571,7 +571,7 @@ fn associative_links_propagate_activation() {
     db.storage().recompute_all_relevance(t30).unwrap();
 
     // Create an associative link between two topics
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let rust_topic = topics
         .iter()
         .find(|t| t.content.contains("Rust error handling architecture"))
@@ -620,13 +620,13 @@ fn existing_topic_is_augmented_not_duplicated() {
     lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("session-1"))
         .unwrap();
 
-    let topics_before = db.list_topics(None);
+    let topics_before = db.list_roots(None);
     assert_eq!(topics_before.len(), 1);
     let topic_id = topics_before[0].id;
 
     // Second ingestion: reference the existing topic by ID
     let augmentation = ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: Some(topic_id.to_string()),
             content: "Updated: thiserror for libraries, anyhow for apps. Also consider \
                       miette for user-facing error reports with source annotations."
@@ -645,7 +645,7 @@ fn existing_topic_is_augmented_not_duplicated() {
     lore_daemon::ingestion::store_knowledge(&db, &augmentation, Some("session-2")).unwrap();
 
     // Should still have 1 topic, not 2
-    let topics_after = db.list_topics(None);
+    let topics_after = db.list_roots(None);
     assert_eq!(
         topics_after.len(),
         1,
@@ -671,7 +671,7 @@ fn hallucinated_topic_id_creates_new_topic() {
     let db = test_db();
 
     let knowledge = ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
             content: "This references a topic ID that doesn't exist.".to_string(),
             importance: "medium".to_string(),
@@ -682,7 +682,7 @@ fn hallucinated_topic_id_creates_new_topic() {
     lore_daemon::ingestion::store_knowledge(&db, &knowledge, Some("test")).unwrap();
 
     // Should create a new topic since the ID doesn't exist
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     assert_eq!(topics.len(), 1);
     assert_ne!(
         topics[0].id.to_string(),
@@ -720,11 +720,7 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
     let now = now_unix();
 
     // Insert a low-importance child that's very old
-    let topic = Fragment::new_with_importance(
-        "Topic that stays".to_string(),
-        0,
-        0.5,
-    );
+    let topic = Fragment::new_with_importance("Topic that stays".to_string(), 0, 0.5);
     db.insert(topic.clone(), None).unwrap();
 
     let mut old_child = Fragment::new_with_importance(
@@ -748,11 +744,7 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
         .unwrap();
 
     // Also insert a fresh child that should survive
-    let fresh_child = Fragment::new_with_importance(
-        "Fresh important detail".to_string(),
-        1,
-        0.9,
-    );
+    let fresh_child = Fragment::new_with_importance("Fresh important detail".to_string(), 1, 0.9);
     db.insert(fresh_child.clone(), Some(topic.id)).unwrap();
 
     // Verify the old child has very low relevance (floor = 0.02 * 0.3 = 0.006)
@@ -852,7 +844,7 @@ async fn associative_edges_decay_over_multiple_consolidation_cycles() {
     ingest_all(&db);
 
     // Create an associative link
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let (a, b) = (topics[0].id, topics[1].id);
     db.link(a, b, EdgeKind::Associative, 1.0).unwrap();
 
@@ -885,7 +877,7 @@ async fn weak_associative_edges_get_pruned() {
     ingest_all(&db);
 
     // Create a weak associative link that should get pruned quickly
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let (a, b) = (topics[0].id, topics[1].id);
     db.link(a, b, EdgeKind::Associative, 0.2).unwrap();
 
@@ -921,7 +913,7 @@ async fn hierarchical_edges_are_immune_to_decay() {
     let db = test_db();
     ingest_all(&db);
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     let topic_with_children = topics
         .iter()
         .find(|t| !db.children(t.id).is_empty())
@@ -958,7 +950,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     // ── Day 0: Ingest knowledge from multiple sessions ──
     ingest_all(&db);
 
-    let initial_topics = db.list_topics(None);
+    let initial_topics = db.list_roots(None);
     assert_eq!(initial_topics.len(), 3);
 
     // All fragments start with full relevance
@@ -973,7 +965,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     let t30 = now + 30 * day;
     db.storage().recompute_all_relevance(t30).unwrap();
 
-    let topics_at_30d = db.list_topics(None);
+    let topics_at_30d = db.list_roots(None);
     // All should have decayed but still be visible
     for topic in &topics_at_30d {
         assert!(
@@ -996,7 +988,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
 
     // The Rust topic was reinforced at day 30, so it decays from day 30, not day 0
     // Other topics decay from day 0 (60 days of decay)
-    let topics_at_60d = db.list_topics(None);
+    let topics_at_60d = db.list_roots(None);
     let rust_at_60 = topics_at_60d
         .iter()
         .find(|t| t.content.contains("Rust"))
@@ -1028,7 +1020,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     assert!(stats.relevance_updated > 0, "Phase 0 should run");
 
     // High importance topics should still be visible even at 90 days
-    let topics_at_90d = db.list_topics(None);
+    let topics_at_90d = db.list_roots(None);
     let rust_at_90 = topics_at_90d
         .iter()
         .find(|t| t.content.contains("Rust"))
@@ -1062,7 +1054,7 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
         .unwrap();
 
     // Create an associative link between related topics
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
     assert_eq!(topics.len(), 2);
     db.link(topics[0].id, topics[1].id, EdgeKind::Associative, 0.8)
         .unwrap();
@@ -1079,7 +1071,7 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
         .unwrap();
 
     // Both topics should still be present
-    let topics_after = db.list_topics(None);
+    let topics_after = db.list_roots(None);
     assert_eq!(topics_after.len(), 2);
 
     // The graph should have hierarchical edges (topic→children) and
@@ -1104,12 +1096,12 @@ fn superseded_knowledge_is_invisible_but_retained() {
     // Ingest initial knowledge
     lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("v1")).unwrap();
 
-    let topics_v1 = db.list_topics(None);
+    let topics_v1 = db.list_roots(None);
     let old_topic_id = topics_v1[0].id;
 
     // Ingest updated knowledge as a new topic (simulating contradiction resolution)
     let updated = ExtractedKnowledge {
-        topics: vec![ExtractedTopicEntry {
+        roots: vec![ExtractedEntry {
             existing_id: None,
             content: "Rust error handling (revised): Use thiserror for all library AND binary crates for consistency. \
                       Anyhow is no longer recommended due to opaque error types."
@@ -1120,7 +1112,7 @@ fn superseded_knowledge_is_invisible_but_retained() {
     };
     lore_daemon::ingestion::store_knowledge(&db, &updated, Some("v2")).unwrap();
 
-    let all_topics = db.list_topics(None);
+    let all_topics = db.list_roots(None);
     let new_topic = all_topics
         .iter()
         .find(|t| t.content.contains("revised"))
@@ -1129,8 +1121,8 @@ fn superseded_knowledge_is_invisible_but_retained() {
     // Supersede old with new
     db.supersede(old_topic_id, new_topic.id).unwrap();
 
-    // Old topic should not appear in list_topics
-    let visible_topics = db.list_topics(None);
+    // Old topic should not appear in list_roots
+    let visible_topics = db.list_roots(None);
     assert!(
         !visible_topics.iter().any(|t| t.id == old_topic_id),
         "Superseded topic should be invisible"
@@ -1161,20 +1153,20 @@ fn importance_levels_produce_correct_decay_behavior() {
 
     // Create fragments with each importance level
     let knowledge = ExtractedKnowledge {
-        topics: vec![
-            ExtractedTopicEntry {
+        roots: vec![
+            ExtractedEntry {
                 existing_id: None,
                 content: "Critical decision: A critical architectural decision.".to_string(),
                 importance: "high".to_string(),
                 children: vec![],
             },
-            ExtractedTopicEntry {
+            ExtractedEntry {
                 existing_id: None,
                 content: "Technical pattern: A useful technical pattern.".to_string(),
                 importance: "medium".to_string(),
                 children: vec![],
             },
-            ExtractedTopicEntry {
+            ExtractedEntry {
                 existing_id: None,
                 content: "Routine observation: A routine observation.".to_string(),
                 importance: "low".to_string(),
@@ -1184,7 +1176,7 @@ fn importance_levels_produce_correct_decay_behavior() {
     };
     lore_daemon::ingestion::store_knowledge(&db, &knowledge, Some("test")).unwrap();
 
-    let topics = db.list_topics(None);
+    let topics = db.list_roots(None);
 
     // Verify decay rates are set correctly
     let high = topics
@@ -1218,7 +1210,7 @@ fn importance_levels_produce_correct_decay_behavior() {
     let t60 = now + 60 * day;
     db.storage().recompute_all_relevance(t60).unwrap();
 
-    let topics_60d = db.list_topics(None);
+    let topics_60d = db.list_roots(None);
     let high_60 = topics_60d
         .iter()
         .find(|t| t.content.contains("Critical decision"))

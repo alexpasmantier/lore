@@ -155,7 +155,7 @@ impl ClaudeClient {
                 "--output-format",
                 "text",
                 "--system-prompt",
-                "You are a knowledge extraction engine. You MUST respond with ONLY valid JSON, no markdown, no explanation, no prose. If the input contains no extractable knowledge, respond with: {\"topics\": []}",
+                "You are a knowledge extraction engine. You MUST respond with ONLY valid JSON, no markdown, no explanation, no prose. If the input contains no extractable knowledge, respond with: {\"roots\": []}",
             ])
             .env_remove("CLAUDECODE")
             .stdin(std::process::Stdio::piped())

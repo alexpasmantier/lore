@@ -102,12 +102,12 @@ impl LoreDb {
         Some(self.build_tree(fragment, max_depth))
     }
 
-    /// Explore a topic: find the best matching L0 nodes, return their subtrees.
+    /// Explore a topic: find the best matching L0 root nodes, return their subtrees.
     pub fn explore(&self, topic: &str, max_depth: u32, limit: usize) -> Vec<Tree> {
-        // Find matching L0 topics
-        let top_topics = self.query(topic, 0, limit);
+        // Find matching L0 roots
+        let top_roots = self.query(topic, 0, limit);
 
-        top_topics
+        top_roots
             .into_iter()
             .filter_map(|sf| self.subtree(sf.fragment.id, max_depth))
             .collect()
@@ -140,23 +140,23 @@ impl LoreDb {
         scored
     }
 
-    /// List all top-level topics (L0 nodes), sorted by relevance (most relevant first).
+    /// List all root-level fragments (L0 nodes), sorted by relevance (most relevant first).
     /// Optionally filter by a keyword query (matched against content).
-    pub fn list_topics(&self, filter: Option<&str>) -> Vec<Fragment> {
-        let mut topics = self.storage.get_fragments_at_depth(0).unwrap_or_default();
+    pub fn list_roots(&self, filter: Option<&str>) -> Vec<Fragment> {
+        let mut roots = self.storage.get_fragments_at_depth(0).unwrap_or_default();
 
         // Apply keyword filter if provided
         if let Some(query) = filter {
             let query_lower = query.to_lowercase();
-            topics.retain(|t| t.content.to_lowercase().contains(&query_lower));
+            roots.retain(|t| t.content.to_lowercase().contains(&query_lower));
         }
 
-        topics.sort_by(|a, b| {
+        roots.sort_by(|a, b| {
             b.relevance_score
                 .partial_cmp(&a.relevance_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        topics
+        roots
     }
 
     /// Insert a fragment, optionally generate its embedding, and connect it to parent.
@@ -246,28 +246,21 @@ impl LoreDb {
         self.storage.get_associations(id).unwrap_or_default()
     }
 
-    /// Find the best parent topic (L0) for a fragment by embedding similarity.
-    /// Returns the parent FragmentId if a sufficiently similar topic exists (cosine > threshold).
-    pub fn find_best_parent(
-        &self,
-        content: &str,
-        threshold: f32,
-    ) -> Option<FragmentId> {
+    /// Find the best parent root (L0) for a fragment by embedding similarity.
+    /// Returns the parent FragmentId if a sufficiently similar root exists (cosine > threshold).
+    pub fn find_best_parent(&self, content: &str, threshold: f32) -> Option<FragmentId> {
         let query_embedding = self.embed_text(content)?;
 
-        let topics = self
-            .storage
-            .get_fragments_with_embeddings(Some(0))
-            .ok()?;
+        let roots = self.storage.get_fragments_with_embeddings(Some(0)).ok()?;
 
         let mut best: Option<(FragmentId, f32)> = None;
-        for topic in &topics {
-            if topic.embedding.is_empty() || topic.superseded_by.is_some() {
+        for root in &roots {
+            if root.embedding.is_empty() || root.superseded_by.is_some() {
                 continue;
             }
-            let sim = cosine_similarity(&query_embedding, &topic.embedding);
+            let sim = cosine_similarity(&query_embedding, &root.embedding);
             if sim > threshold && (best.is_none() || sim > best.unwrap().1) {
-                best = Some((topic.id, sim));
+                best = Some((root.id, sim));
             }
         }
 
@@ -354,10 +347,7 @@ impl LoreDb {
                 } else {
                     // Check for individual word matches
                     let words: Vec<&str> = topic_lower.split_whitespace().collect();
-                    let matches = words
-                        .iter()
-                        .filter(|w| content_lower.contains(*w))
-                        .count();
+                    let matches = words.iter().filter(|w| content_lower.contains(*w)).count();
                     if matches > 0 {
                         0.3 + (0.4 * matches as f32 / words.len() as f32)
                     } else {
@@ -397,17 +387,11 @@ mod tests {
         let db = LoreDb::new_without_embeddings(storage);
 
         // Create a small knowledge hierarchy
-        let mut topic = Fragment::new(
-            "Rust programming language".to_string(),
-            0,
-        );
+        let mut topic = Fragment::new("Rust programming language".to_string(), 0);
         topic.embedding = vec![0.1; 384];
         db.storage().insert_fragment(&topic).unwrap();
 
-        let mut concept = Fragment::new(
-            "Rust async programming with tokio".to_string(),
-            1,
-        );
+        let mut concept = Fragment::new("Rust async programming with tokio".to_string(), 1);
         concept.embedding = vec![0.2; 384];
         db.storage().insert_fragment(&concept).unwrap();
 
@@ -421,10 +405,7 @@ mod tests {
         };
         db.storage().insert_edge(&edge).unwrap();
 
-        let mut fact = Fragment::new(
-            "Tokio uses a work-stealing scheduler".to_string(),
-            2,
-        );
+        let mut fact = Fragment::new("Tokio uses a work-stealing scheduler".to_string(), 2);
         fact.embedding = vec![0.3; 384];
         db.storage().insert_fragment(&fact).unwrap();
 
@@ -444,7 +425,7 @@ mod tests {
     #[test]
     fn test_list_topics() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
         assert_eq!(topics.len(), 1);
         assert_eq!(topics[0].content, "Rust programming language");
     }
@@ -452,7 +433,7 @@ mod tests {
     #[test]
     fn test_children_and_parent() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
         let topic = &topics[0];
 
         let children = db.children(topic.id);
@@ -466,12 +447,15 @@ mod tests {
     #[test]
     fn test_subtree() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
         let tree = db.subtree(topics[0].id, 3).unwrap();
 
         assert_eq!(tree.fragment.content, "Rust programming language");
         assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].fragment.content, "Rust async programming with tokio");
+        assert_eq!(
+            tree.children[0].fragment.content,
+            "Rust async programming with tokio"
+        );
         assert_eq!(tree.children[0].children.len(), 1);
         assert_eq!(
             tree.children[0].children[0].fragment.content,
@@ -506,7 +490,7 @@ mod tests {
     #[test]
     fn test_prune() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
         assert_eq!(topics.len(), 1);
 
         // Get the topic's children first
@@ -523,11 +507,10 @@ mod tests {
     #[test]
     fn test_update_fragment() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
         let topic_id = topics[0].id;
 
-        db.update(topic_id, "Updated Rust content")
-            .unwrap();
+        db.update(topic_id, "Updated Rust content").unwrap();
 
         let loaded = db.storage().get_fragment(topic_id).unwrap().unwrap();
         assert_eq!(loaded.content, "Updated Rust content");
@@ -536,12 +519,9 @@ mod tests {
     #[test]
     fn test_insert_with_parent() {
         let db = make_test_db();
-        let topics = db.list_topics(None);
+        let topics = db.list_roots(None);
 
-        let new_concept = Fragment::new(
-            "Rust ownership system".to_string(),
-            1,
-        );
+        let new_concept = Fragment::new("Rust ownership system".to_string(), 1);
         let new_id = db.insert(new_concept, Some(topics[0].id)).unwrap();
 
         let children = db.children(topics[0].id);

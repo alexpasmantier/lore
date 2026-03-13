@@ -30,7 +30,7 @@ pub struct ConsolidationConfig {
     pub interval_secs: u64,
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: f32,
-    /// Similarity above which topics are merged (must be >= similarity_threshold).
+    /// Similarity above which roots are merged (must be >= similarity_threshold).
     #[serde(default = "default_merge_threshold")]
     pub merge_threshold: f32,
     #[serde(default = "default_prune_age_days")]

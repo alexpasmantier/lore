@@ -588,8 +588,10 @@ impl Storage {
 
     /// Delete all staged turns for a session after digestion.
     pub fn delete_staged_turns(&self, file_path: &str) -> rusqlite::Result<usize> {
-        self.conn
-            .execute("DELETE FROM staged_turns WHERE file_path = ?1", params![file_path])
+        self.conn.execute(
+            "DELETE FROM staged_turns WHERE file_path = ?1",
+            params![file_path],
+        )
     }
 
     /// Get a reference to the underlying connection (for transactions).
@@ -615,8 +617,7 @@ pub struct StagedTurn {
 // ──── Helper functions ────
 
 /// Column list for fragment queries (no table prefix).
-const FRAGMENT_COLUMNS: &str =
-    "id, content, depth, embedding, created_at, last_accessed, \
+const FRAGMENT_COLUMNS: &str = "id, content, depth, embedding, created_at, last_accessed, \
      access_count, source_session, superseded_by, metadata, \
      importance, relevance_score, decay_rate, last_reinforced";
 
@@ -720,10 +721,7 @@ mod tests {
     fn test_fragment_crud() {
         let storage = Storage::open_memory().unwrap();
 
-        let mut frag = Fragment::new(
-            "Rust async programming".to_string(),
-            0,
-        );
+        let mut frag = Fragment::new("Rust async programming".to_string(), 0);
         frag.embedding = vec![1.0, 2.0, 3.0];
 
         storage.insert_fragment(&frag).unwrap();
@@ -766,21 +764,14 @@ mod tests {
     fn test_update_fragment_content() {
         let storage = Storage::open_memory().unwrap();
 
-        let mut frag = Fragment::new(
-            "Original content".to_string(),
-            0,
-        );
+        let mut frag = Fragment::new("Original content".to_string(), 0);
         frag.embedding = vec![1.0, 2.0, 3.0];
         storage.insert_fragment(&frag).unwrap();
 
         // Update with new embedding
         let new_emb = vec![4.0, 5.0, 6.0];
         storage
-            .update_fragment_content(
-                frag.id,
-                "Updated content",
-                Some(&new_emb),
-            )
+            .update_fragment_content(frag.id, "Updated content", Some(&new_emb))
             .unwrap();
 
         let loaded = storage.get_fragment(frag.id).unwrap().unwrap();
@@ -849,7 +840,9 @@ mod tests {
             ("assistant", "Hi there"),
             ("user", "How does X work?"),
         ];
-        let count = storage.stage_turns("/path/to/session.jsonl", &turns).unwrap();
+        let count = storage
+            .stage_turns("/path/to/session.jsonl", &turns)
+            .unwrap();
         assert_eq!(count, 3);
 
         let retrieved = storage.get_staged_turns("/path/to/session.jsonl").unwrap();
@@ -866,14 +859,21 @@ mod tests {
         let now = now_unix();
 
         // Stage turns for two sessions
-        storage.stage_turns("/idle.jsonl", &[("user", "old")]).unwrap();
-        storage.stage_turns("/active.jsonl", &[("user", "fresh")]).unwrap();
+        storage
+            .stage_turns("/idle.jsonl", &[("user", "old")])
+            .unwrap();
+        storage
+            .stage_turns("/active.jsonl", &[("user", "fresh")])
+            .unwrap();
 
         // Backdate the idle session
-        storage.conn().execute(
-            "UPDATE staged_turns SET staged_at = ?1 WHERE file_path = ?2",
-            params![now - 600, "/idle.jsonl"],
-        ).unwrap();
+        storage
+            .conn()
+            .execute(
+                "UPDATE staged_turns SET staged_at = ?1 WHERE file_path = ?2",
+                params![now - 600, "/idle.jsonl"],
+            )
+            .unwrap();
 
         // With 300s threshold, only the idle session should be returned
         let sessions = storage.get_staged_sessions(300, now).unwrap();
@@ -886,7 +886,9 @@ mod tests {
     fn test_delete_staged_turns() {
         let storage = Storage::open_memory().unwrap();
 
-        storage.stage_turns("/session.jsonl", &[("user", "hello"), ("assistant", "hi")]).unwrap();
+        storage
+            .stage_turns("/session.jsonl", &[("user", "hello"), ("assistant", "hi")])
+            .unwrap();
         assert_eq!(storage.get_staged_turns("/session.jsonl").unwrap().len(), 2);
 
         let deleted = storage.delete_staged_turns("/session.jsonl").unwrap();

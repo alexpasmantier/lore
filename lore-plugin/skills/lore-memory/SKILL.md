@@ -41,10 +41,10 @@ Get a full tree view of a knowledge area — shows the hierarchical structure. `
 Navigate from a specific fragment: get its children (drill deeper), parent (zoom out), or associations (lateral connections).
 
 ### `store_memory`
-Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level. If you omit the parent ID for depth > 0, the system automatically assigns the fragment to the most semantically similar existing topic.
+Explicitly store a piece of knowledge. Provide content, a summary, optional parent ID, and depth level. If you omit the parent ID for depth > 0, the system automatically assigns the fragment to the most semantically similar existing root.
 
-### `list_topics`
-See top-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Supports pagination (`limit`/`offset`) and keyword filtering (`query`). Returns pagination metadata (`total`, `offset`, `limit`).
+### `list_roots`
+See root-level knowledge domains with summaries and child counts, sorted by relevance (most active/important first). Supports pagination (`limit`/`offset`) and keyword filtering (`query`). Returns pagination metadata (`total`, `offset`, `limit`).
 
 ### `delete_memory`
 Remove a memory fragment and all its edges. Use this to clean up incorrect, outdated, or duplicate knowledge.
@@ -69,4 +69,4 @@ Update the content and summary of an existing fragment in-place. The embedding i
 1. **Start broad, drill deep**: Query at depth 0-1 first, then use `traverse_memory` to go deeper
 2. **Check before storing**: Use `query_memory` to avoid duplicating existing knowledge
 3. **Use meaningful summaries**: The summary field is used for tree browsing — make it descriptive
-4. **Connect to existing topics**: When storing, find the right parent topic rather than creating orphans
+4. **Connect to existing roots**: When storing, find the right parent root rather than creating orphans

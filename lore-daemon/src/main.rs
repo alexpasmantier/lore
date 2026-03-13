@@ -7,9 +7,9 @@ use lore_db::{LoreDb, Storage};
 
 use lore_daemon::claude_client::ClaudeClient;
 use lore_daemon::config::Config;
+use lore_daemon::consolidation;
 use lore_daemon::status::{self, DaemonState};
 use lore_daemon::watcher::FileWatcher;
-use lore_daemon::consolidation;
 
 #[derive(Parser)]
 #[command(
@@ -52,9 +52,9 @@ enum Command {
         #[arg(short, long)]
         follow: bool,
     },
-    /// List top-level topics
-    Topics {
-        /// Max topics to show
+    /// List root-level fragments
+    Roots {
+        /// Max roots to show
         #[arg(short, long, default_value = "20")]
         limit: usize,
         /// Filter by keyword
@@ -64,7 +64,7 @@ enum Command {
     Query {
         /// Search text
         topic: String,
-        /// Depth level to search (0=topics, 1=concepts, etc.)
+        /// Depth level to search (0=roots, 1=concepts, etc.)
         #[arg(short, long, default_value = "0")]
         depth: u32,
         /// Max results
@@ -128,9 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_writer(Mutex::new(file))
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     let config = Config::load(&config_path(&cli.config))?;
@@ -143,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Ingest => run_single_ingest(config).await?,
         Command::Consolidate => run_single_consolidation(config).await?,
         Command::Logs { lines, follow } => tail_logs(lines, follow)?,
-        Command::Topics { limit, query } => cli_topics(config, limit, query.as_deref())?,
+        Command::Roots { limit, query } => cli_roots(config, limit, query.as_deref())?,
         Command::Query {
             topic,
             depth,
@@ -397,9 +395,7 @@ fn tail_logs(lines: usize, follow: bool) -> Result<(), Box<dyn std::error::Error
     }
     args.push(path.to_string_lossy().into_owned());
 
-    let status = std::process::Command::new("tail")
-        .args(&args)
-        .status()?;
+    let status = std::process::Command::new("tail").args(&args).status()?;
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -423,26 +419,23 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
-fn cli_topics(
+fn cli_roots(
     config: Config,
     limit: usize,
     query: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db = open_db(&config)?;
-    let mut topics = db.list_topics(query);
-    topics.truncate(limit);
+    let mut roots = db.list_roots(query);
+    roots.truncate(limit);
 
-    if topics.is_empty() {
-        println!("No topics found.");
+    if roots.is_empty() {
+        println!("No roots found.");
         return Ok(());
     }
 
-    println!(
-        "{:<38} {:>5} {:>5}  Content",
-        "ID", "Rel", "Acc"
-    );
+    println!("{:<38} {:>5} {:>5}  Content", "ID", "Rel", "Acc");
     println!("{}", "-".repeat(100));
-    for t in &topics {
+    for t in &roots {
         let children = db.children(t.id).len();
         let content_preview = truncate(&t.content, 60);
         println!(
@@ -458,7 +451,7 @@ fn cli_topics(
             }
         );
     }
-    println!("\n{} topics", topics.len());
+    println!("\n{} roots", roots.len());
     Ok(())
 }
 
@@ -504,8 +497,8 @@ fn cli_explore(
 
     // Support ID prefix matching
     let id = if id_prefix.len() < 36 {
-        let topics = db.list_topics(None);
-        let all_frags: Vec<_> = topics
+        let roots = db.list_roots(None);
+        let all_frags: Vec<_> = roots
             .iter()
             .filter(|f| f.id.to_string().starts_with(id_prefix))
             .collect();
@@ -516,7 +509,10 @@ fn cli_explore(
             }
             1 => all_frags[0].id,
             n => {
-                println!("Ambiguous prefix \"{}\" matches {} fragments:", id_prefix, n);
+                println!(
+                    "Ambiguous prefix \"{}\" matches {} fragments:",
+                    id_prefix, n
+                );
                 for f in &all_frags {
                     println!("  {} - {}", f.id, truncate(&f.content, 60));
                 }
@@ -558,10 +554,7 @@ fn cli_staged(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!(
-        "{:<70} {:>6} {:>8}",
-        "Session", "Turns", "Age"
-    );
+    println!("{:<70} {:>6} {:>8}", "Session", "Turns", "Age");
     println!("{}", "-".repeat(90));
     let mut total_turns = 0;
     for s in &sessions {
@@ -580,11 +573,7 @@ fn cli_staged(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         println!("{:<70} {:>6} {:>8}", name, s.turn_count, age);
         total_turns += s.turn_count;
     }
-    println!(
-        "\n{} sessions, {} total turns",
-        sessions.len(),
-        total_turns
-    );
+    println!("\n{} sessions, {} total turns", sessions.len(), total_turns);
     Ok(())
 }
 

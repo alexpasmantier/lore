@@ -19,13 +19,13 @@ pub async fn run_consolidation(
 
     // Phase 0: Digest staged conversations into knowledge fragments
     if let Some(client) = client {
-        let (sessions, fragments) =
-            phase0_digest_staged(db, client, config).await?;
+        let (sessions, fragments) = phase0_digest_staged(db, client, config).await?;
         stats.sessions_digested = sessions;
         stats.fragments_extracted = fragments;
         tracing::info!(
             "Phase 0: Digested {} sessions, extracted {} fragments",
-            sessions, fragments
+            sessions,
+            fragments
         );
     }
 
@@ -36,15 +36,15 @@ pub async fn run_consolidation(
         stats.relevance_updated
     );
 
-    // Phase 2: Similarity detection + topic merging
+    // Phase 2: Similarity detection + root merging
     let similar_pairs = phase1_similarity_detection(db, config.similarity_threshold);
-    tracing::info!("Phase 2: Found {} similar topic pairs", similar_pairs.len());
+    tracing::info!("Phase 2: Found {} similar root pairs", similar_pairs.len());
 
-    stats.topics_merged = phase1_topic_merging(db, &similar_pairs, config.merge_threshold)?;
-    tracing::info!("Phase 2: Merged {} topic pairs", stats.topics_merged);
+    stats.roots_merged = phase1_root_merging(db, &similar_pairs, config.merge_threshold)?;
+    tracing::info!("Phase 2: Merged {} root pairs", stats.roots_merged);
 
     // Phase 3: Create associative links between related concepts
-    let similar_pairs = if stats.topics_merged > 0 {
+    let similar_pairs = if stats.roots_merged > 0 {
         phase1_similarity_detection(db, config.similarity_threshold)
     } else {
         similar_pairs
@@ -52,13 +52,10 @@ pub async fn run_consolidation(
     stats.links_created = phase2_link_creation(db, &similar_pairs)?;
     tracing::info!("Phase 3: Created {} associative links", stats.links_created);
 
-    // Phase 4: Re-summarization of topics with modified children
+    // Phase 4: Re-summarization of roots with modified children
     if let Some(client) = client {
-        stats.topics_resummarized = phase3_resummarization(db, client).await?;
-        tracing::info!(
-            "Phase 4: Re-summarized {} topics",
-            stats.topics_resummarized
-        );
+        stats.roots_resummarized = phase3_resummarization(db, client).await?;
+        tracing::info!("Phase 4: Re-summarized {} roots", stats.roots_resummarized);
 
         // Phase 5: Contradiction resolution
         stats.contradictions_resolved = phase4_contradiction_resolution(db, client).await?;
@@ -90,9 +87,9 @@ pub struct ConsolidationStats {
     pub sessions_digested: usize,
     pub fragments_extracted: usize,
     pub relevance_updated: usize,
-    pub topics_merged: usize,
+    pub roots_merged: usize,
     pub links_created: usize,
-    pub topics_resummarized: usize,
+    pub roots_resummarized: usize,
     pub contradictions_resolved: usize,
     pub edges_pruned: usize,
     pub fragments_pruned: usize,
@@ -133,11 +130,7 @@ async fn phase0_digest_staged(
             })
             .collect();
 
-        tracing::info!(
-            "Digesting {} turns from {}",
-            turns.len(),
-            session.file_path
-        );
+        tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
 
         // Derive session ID from file path (same as old ingestion)
         let session_id = std::path::Path::new(&session.file_path)
@@ -145,14 +138,13 @@ async fn phase0_digest_staged(
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
-        // Build existing topic context
-        let existing_topics: Vec<ingestion::ExistingTopicContext> = db
-            .list_topics(None)
+        // Build existing root context
+        let existing_roots: Vec<ingestion::ExistingRootContext> = db
+            .list_roots(None)
             .into_iter()
             .map(|t| {
-                let children_content =
-                    db.children(t.id).into_iter().map(|c| c.content).collect();
-                ingestion::ExistingTopicContext {
+                let children_content = db.children(t.id).into_iter().map(|c| c.content).collect();
+                ingestion::ExistingRootContext {
                     id: t.id.to_string(),
                     content: t.content.clone(),
                     children_content,
@@ -161,17 +153,14 @@ async fn phase0_digest_staged(
             .collect();
 
         // Chunk large conversations
-        let chunks: Vec<&[ConversationTurn]> =
-            if turns.len() > config.max_turns_per_extraction {
-                turns
-                    .chunks(config.max_turns_per_extraction)
-                    .collect()
-            } else {
-                vec![&turns]
-            };
+        let chunks: Vec<&[ConversationTurn]> = if turns.len() > config.max_turns_per_extraction {
+            turns.chunks(config.max_turns_per_extraction).collect()
+        } else {
+            vec![&turns]
+        };
 
         for chunk in &chunks {
-            match ingestion::extract_knowledge(client, chunk, &existing_topics).await {
+            match ingestion::extract_knowledge(client, chunk, &existing_roots).await {
                 Ok(knowledge) => {
                     match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
                         Ok(count) => {
@@ -192,25 +181,22 @@ async fn phase0_digest_staged(
     Ok((total_sessions, total_fragments))
 }
 
-/// Phase 1: Find pairs of L0 topics with high semantic similarity.
-fn phase1_similarity_detection(
-    db: &LoreDb,
-    threshold: f32,
-) -> Vec<(FragmentId, FragmentId, f32)> {
-    let topics = db.list_topics(None);
+/// Phase 1: Find pairs of L0 roots with high semantic similarity.
+fn phase1_similarity_detection(db: &LoreDb, threshold: f32) -> Vec<(FragmentId, FragmentId, f32)> {
+    let roots = db.list_roots(None);
     let mut pairs = Vec::new();
 
-    for i in 0..topics.len() {
-        if topics[i].embedding.is_empty() {
+    for i in 0..roots.len() {
+        if roots[i].embedding.is_empty() {
             continue;
         }
-        for j in (i + 1)..topics.len() {
-            if topics[j].embedding.is_empty() {
+        for j in (i + 1)..roots.len() {
+            if roots[j].embedding.is_empty() {
                 continue;
             }
-            let sim = cosine_similarity(&topics[i].embedding, &topics[j].embedding);
+            let sim = cosine_similarity(&roots[i].embedding, &roots[j].embedding);
             if sim > threshold {
-                pairs.push((topics[i].id, topics[j].id, sim));
+                pairs.push((roots[i].id, roots[j].id, sim));
             }
         }
     }
@@ -218,9 +204,9 @@ fn phase1_similarity_detection(
     pairs
 }
 
-/// Merge topic pairs above the merge threshold.
+/// Merge root pairs above the merge threshold.
 /// Picks the survivor (higher access_count), reparents victim's children, supersedes victim.
-fn phase1_topic_merging(
+fn phase1_root_merging(
     db: &LoreDb,
     similar_pairs: &[(FragmentId, FragmentId, f32)],
     merge_threshold: f32,
@@ -261,7 +247,7 @@ fn phase1_topic_merging(
         merged += 1;
 
         tracing::info!(
-            "Merged topic {} into {} (sim={:.3})",
+            "Merged root {} into {} (sim={:.3})",
             victim_id,
             survivor_id,
             sim
@@ -271,7 +257,7 @@ fn phase1_topic_merging(
     Ok(merged)
 }
 
-/// Phase 2: For each similar topic pair, create associative links between their children.
+/// Phase 2: For each similar root pair, create associative links between their children.
 fn phase2_link_creation(
     db: &LoreDb,
     similar_pairs: &[(FragmentId, FragmentId, f32)],
@@ -279,9 +265,9 @@ fn phase2_link_creation(
     let mut links_created = 0;
     let cross_threshold = 0.7;
 
-    for &(topic_a, topic_b, _) in similar_pairs {
-        let children_a = db.children(topic_a);
-        let children_b = db.children(topic_b);
+    for &(root_a, root_b, _) in similar_pairs {
+        let children_a = db.children(root_a);
+        let children_b = db.children(root_b);
 
         for ca in &children_a {
             if ca.embedding.is_empty() {
@@ -303,22 +289,22 @@ fn phase2_link_creation(
     Ok(links_created)
 }
 
-/// Phase 3: Re-summarize topics whose children have been modified since last access.
+/// Phase 3: Re-summarize roots whose children have been modified since last access.
 async fn phase3_resummarization(
     db: &LoreDb,
     client: &ClaudeClient,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let topics = db.list_topics(None);
+    let roots = db.list_roots(None);
     let mut resummarized = 0;
 
-    for topic in &topics {
-        let children = db.children(topic.id);
+    for root in &roots {
+        let children = db.children(root.id);
         if children.is_empty() {
             continue;
         }
 
-        // Check if any children were created/modified after the topic was last accessed
-        let has_new_children = children.iter().any(|c| c.created_at > topic.last_accessed);
+        // Check if any children were created/modified after the root was last accessed
+        let has_new_children = children.iter().any(|c| c.created_at > root.last_accessed);
 
         if !has_new_children {
             continue;
@@ -330,14 +316,14 @@ async fn phase3_resummarization(
             .map(|c| format!("- {}", c.content))
             .collect();
 
-        let topic_preview: String = topic.content.chars().take(200).collect();
+        let root_preview: String = root.content.chars().take(200).collect();
         let prompt = format!(
             "Given these child fragments of a knowledge node:\n\nCurrent content: \"{}\"\n\n\
              Children:\n{}\n\n\
              Write a self-contained overview paragraph (3-5 sentences) that captures the key \
              knowledge at a higher abstraction level. Do not use bullet points or lists — \
              write flowing prose.\n\nRespond with ONLY the paragraph, no explanation.",
-            topic_preview,
+            root_preview,
             children_list.join("\n")
         );
 
@@ -345,12 +331,12 @@ async fn phase3_resummarization(
             Ok(new_content) => {
                 let new_content = new_content.trim();
                 if !new_content.is_empty() {
-                    db.update(topic.id, new_content)?;
+                    db.update(root.id, new_content)?;
                     resummarized += 1;
                 }
             }
             Err(e) => {
-                tracing::warn!("Failed to re-summarize topic: {}", e);
+                tracing::warn!("Failed to re-summarize root: {}", e);
             }
         }
     }
@@ -364,12 +350,12 @@ async fn phase4_contradiction_resolution(
     db: &LoreDb,
     client: &ClaudeClient,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let topics = db.list_topics(None);
+    let roots = db.list_roots(None);
 
     // Collect all candidate pairs across the entire tree
     let mut candidates = Vec::new();
-    for topic in &topics {
-        collect_contradiction_candidates(db, topic.id, &mut candidates);
+    for root in &roots {
+        collect_contradiction_candidates(db, root.id, &mut candidates);
     }
 
     if candidates.is_empty() {
@@ -548,7 +534,7 @@ fn phase5_pruning(
 /// Phase 6: Prune fragments with negligible relevance — true forgetting.
 ///
 /// Rules:
-/// - Never prune depth-0 topics (they just rank low instead)
+/// - Never prune depth-0 roots (they just rank low instead)
 /// - Fragments with relevance < 0.02 and no accesses and age > 60 days: deleted
 /// - Fragments with relevance < 0.01 and age > 90 days: deleted regardless
 /// - Before deleting, reparent any children to the fragment's parent
