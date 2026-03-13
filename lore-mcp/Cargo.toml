@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 schemars = "1"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+dirs = { workspace = true }

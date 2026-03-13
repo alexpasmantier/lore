@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db_path = std::env::var("LORE_DB_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_path().join("memory.db"));
+        .unwrap_or_else(|_| lore_db::lore_home().join("memory.db"));
 
     tracing::info!("Starting lore MCP server with db: {}", db_path.display());
 
@@ -28,9 +28,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service.waiting().await?;
 
     Ok(())
-}
-
-fn dirs_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".lore")
 }

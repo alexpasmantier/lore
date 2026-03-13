@@ -18,10 +18,11 @@ impl Default for FileWatcher {
 
 impl FileWatcher {
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        Self {
-            projects_dir: PathBuf::from(home).join(".claude").join("projects"),
-        }
+        let projects_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".claude")
+            .join("projects");
+        Self { projects_dir }
     }
 
     /// Find all .jsonl conversation log files under the projects directory.

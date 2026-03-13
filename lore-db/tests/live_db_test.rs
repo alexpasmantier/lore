@@ -11,8 +11,7 @@ use lore_db::{LoreDb, Storage};
 use std::path::PathBuf;
 
 fn live_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap();
-    PathBuf::from(format!("{}/.lore/memory.db", home))
+    lore_db::lore_home().join("memory.db")
 }
 
 fn open_live_db() -> LoreDb {

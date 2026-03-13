@@ -77,8 +77,10 @@ fn default_min_relevance_prune() -> f32 {
     0.02
 }
 fn default_db_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{}/.lore/memory.db", home)
+    lore_db::lore_home()
+        .join("memory.db")
+        .to_string_lossy()
+        .into_owned()
 }
 fn default_api_key_env() -> String {
     "ANTHROPIC_API_KEY".to_string()
@@ -151,7 +153,7 @@ impl Config {
         let path = self
             .database
             .path
-            .replace('~', &std::env::var("HOME").unwrap_or_default());
+            .replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
         PathBuf::from(path)
     }
 

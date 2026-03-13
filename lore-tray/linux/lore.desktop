@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lore
+Comment=System tray for the Lore memory daemon
+Exec=lore-tray
+Icon=lore
+Terminal=false
+Categories=Utility;System;
+StartupNotify=false

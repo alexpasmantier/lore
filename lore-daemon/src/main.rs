@@ -54,18 +54,21 @@ enum Command {
     },
 }
 
+fn lore_home() -> PathBuf {
+    lore_db::lore_home()
+}
+
 fn pid_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".lore").join("daemon.pid")
+    lore_home().join("daemon.pid")
 }
 
 fn log_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".lore").join("daemon.log")
+    lore_home().join("daemon.log")
 }
 
 fn config_path(raw: &str) -> PathBuf {
-    let expanded = raw.replace('~', &std::env::var("HOME").unwrap_or_default());
+    let home = dirs::home_dir().unwrap_or_default();
+    let expanded = raw.replace('~', &home.to_string_lossy());
     PathBuf::from(expanded)
 }
 
@@ -92,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .open(path)?;
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
+            .with_ansi(false)
             .with_writer(Mutex::new(file))
             .init();
     } else {
@@ -365,14 +369,13 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
 fn daemonize(_config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Fork a child process that runs the daemon
     let exe = std::env::current_exe()?;
-    let home = std::env::var("HOME").unwrap_or_default();
-    let config_path = format!("{}/.lore/config.toml", home);
+    let config_path = lore_home().join("config.toml");
     let log_path = log_file();
 
     let child = std::process::Command::new(exe)
         .args([
             "--config",
-            &config_path,
+            &config_path.to_string_lossy(),
             "start",
             "--log-file",
             &log_path.to_string_lossy(),

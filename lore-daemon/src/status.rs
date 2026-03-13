@@ -22,8 +22,7 @@ pub struct DaemonStatus {
 }
 
 pub fn status_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".lore").join("daemon.status")
+    lore_db::lore_home().join("daemon.status")
 }
 
 pub fn write_status(state: DaemonState) {
