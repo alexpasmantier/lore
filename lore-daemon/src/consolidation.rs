@@ -1,5 +1,5 @@
 use lore_db::fragment::now_unix;
-use lore_db::{cosine_similarity, EdgeKind, LoreDb, Fragment, FragmentId};
+use lore_db::{cosine_similarity, EdgeKind, Fragment, FragmentId, LoreDb};
 
 use crate::claude_client::ClaudeClient;
 use crate::config::ConsolidationConfig;
