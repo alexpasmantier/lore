@@ -33,20 +33,20 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 └──────────┬──────────────────────────────┘
            │ stdio (JSON-RPC)
            ▼
-┌──────────────────┐    ┌──────────────────┐
-│    lore-mcp      │    │   lore-daemon    │
-│   (MCP server)   │    │   (background)   │
-│                  │    │                  │
-│  5 query/store   │    │  Ingestion loop  │
-│  tools for       │    │  Consolidation   │
-│  agents          │    │  (7 phases)      │
-└────────┬─────────┘    └────────┬─────────┘
-         │ read                  │ read/write
-         ▼                       ▼
-    ┌───────────────────────────────────┐
-    │        ~/.lore/memory.db          │
-    │        (SQLite + WAL mode)        │
-    │                                   │
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│    lore-mcp      │    │   lore-daemon    │◄───│    lore-tray     │
+│   (MCP server)   │    │   (background)   │    │  (system tray)   │
+│                  │    │                  │    │                  │
+│  5 query/store   │    │  Ingestion loop  │    │  Monitor, start  │
+│  tools for       │    │  Consolidation   │    │  stop & trigger  │
+│  agents          │    │  (7 phases)      │    │  daemon actions  │
+└────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘
+         │ read                  │ read/write             │ reads
+         ▼                       ▼                        ▼
+    ┌───────────────────────────────────┐  ┌──────────────────────┐
+    │        ~/.lore/memory.db          │  │ ~/.lore/daemon.status│
+    │        (SQLite + WAL mode)        │  │      (JSON)          │
+    │                                   │  └──────────────────────┘
     │  Fragments · Edges · Watermarks   │
     └───────────────────────────────────┘
 ```
@@ -56,6 +56,7 @@ Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so st
 - **lore-db** — Core library. SQLite storage, local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`), relevance scoring, spreading activation.
 - **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the shared knowledge base to any connected agent.
 - **lore-daemon** — Background process. Watches conversation logs across all projects (`~/.claude/projects/`), extracts knowledge via Claude API, runs 7-phase consolidation.
+- **lore-tray** — System tray icon. Monitors the daemon and provides start/stop/trigger controls.
 - **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
 ### Consolidation
@@ -75,9 +76,11 @@ Runs periodically (default: every 2 hours) and walks the entire graph:
 ## Install
 
 ```sh
-cargo build --release -p lore-mcp -p lore-daemon
-cp target/release/lore-mcp target/release/lore-daemon ~/.local/bin/
+cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
+cp target/release/lore-mcp target/release/lore-daemon target/release/lore-tray ~/.local/bin/
 ```
+
+> **Linux prerequisites for lore-tray:** `sudo apt install libgtk-3-dev libayatana-appindicator3-dev`
 
 Register the MCP server (user-level, all sessions):
 
@@ -107,6 +110,30 @@ lore-daemon consolidate    # single consolidation pass
 lore-daemon status         # check if running
 lore-daemon stop           # stop background daemon
 ```
+
+### System tray
+
+```sh
+lore-tray
+```
+
+The tray icon reflects the daemon's current state:
+
+| State | Appearance |
+|-------|------------|
+| **Stopped** | Dim red — the eye is barely glowing |
+| **Idle** | Bright red — full intensity |
+| **Ingesting** | Red, pulsing — breathing animation |
+| **Consolidating** | Orange, pulsing — breathing animation |
+
+Right-click the icon to access the context menu:
+
+- **Start Daemon** / **Stop Daemon** — toggle the background daemon
+- **Trigger Ingestion** — run a single ingestion pass on demand
+- **Trigger Consolidation** — run a single consolidation pass on demand
+- **View Logs** — opens `~/.lore/daemon.log` in a terminal
+
+The tray polls `~/.lore/daemon.status` to stay in sync with the daemon.
 
 ### Configuration
 
