@@ -1,4 +1,10 @@
-# Build and install binaries to ~/.local/bin
+# Build and install the lore CLI to ~/.local/bin
+install-cli:
+    cargo build --release -p lore-daemon
+    mkdir -p ~/.local/bin
+    cp target/release/lore ~/.local/bin/
+
+# Build and install all binaries to ~/.local/bin
 install:
     cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
     cp target/release/lore target/release/lore-{mcp,tray} ~/.local/bin/
