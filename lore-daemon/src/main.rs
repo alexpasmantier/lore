@@ -7,6 +7,7 @@ use lore_db::{LoreDb, Storage};
 
 use lore_daemon::claude_client::ClaudeClient;
 use lore_daemon::config::Config;
+use lore_daemon::status::{self, DaemonState};
 use lore_daemon::watcher::FileWatcher;
 use lore_daemon::{consolidation, ingestion, parser};
 
@@ -123,6 +124,8 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     }
     std::fs::write(&pid_path, pid.to_string())?;
 
+    status::write_status(DaemonState::Idle);
+
     tracing::info!("Lore daemon started (PID: {})", pid);
     tracing::info!("Database: {}", config.db_path().display());
     tracing::info!(
@@ -167,11 +170,14 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     loop {
         tokio::select! {
             _ = ingestion_timer.tick() => {
+                status::write_status(DaemonState::Ingesting);
                 if let Err(e) = run_ingestion_pass(&db, &watcher, &client, batch_size).await {
                     tracing::error!("Ingestion error: {}", e);
                 }
+                status::write_status(DaemonState::Idle);
             }
             _ = consolidation_timer.tick() => {
+                status::write_status(DaemonState::Consolidating);
                 if let Err(e) = consolidation::run_consolidation(
                     &db,
                     Some(&client),
@@ -179,6 +185,7 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
                 ).await {
                     tracing::error!("Consolidation error: {}", e);
                 }
+                status::write_status(DaemonState::Idle);
             }
             _ = shutdown_rx.changed() => {
                 tracing::info!("Shutting down...");
@@ -187,8 +194,9 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
         }
     }
 
-    // Cleanup PID file
+    // Cleanup PID and status files
     let _ = std::fs::remove_file(&pid_path);
+    status::clear_status();
     tracing::info!("Daemon stopped.");
     Ok(())
 }
@@ -210,11 +218,7 @@ async fn run_ingestion_pass(
         .list_topics(None)
         .into_iter()
         .map(|t| {
-            let children_summaries = db
-                .children(t.id)
-                .into_iter()
-                .map(|c| c.summary)
-                .collect();
+            let children_summaries = db.children(t.id).into_iter().map(|c| c.summary).collect();
             ingestion::ExistingTopicContext {
                 id: t.id.to_string(),
                 summary: t.summary.clone(),

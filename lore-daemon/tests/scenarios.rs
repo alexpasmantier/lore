@@ -160,12 +160,8 @@ fn ingest_all(db: &LoreDb) {
         Some("session-rust-errors"),
     )
     .unwrap();
-    lore_daemon::ingestion::store_knowledge(
-        db,
-        &extraction_debugging(),
-        Some("session-debugging"),
-    )
-    .unwrap();
+    lore_daemon::ingestion::store_knowledge(db, &extraction_debugging(), Some("session-debugging"))
+        .unwrap();
     lore_daemon::ingestion::store_knowledge(
         db,
         &extraction_async_patterns(),
@@ -287,8 +283,7 @@ fn children_are_stored_with_correct_depth() {
 #[test]
 fn importance_is_set_correctly_from_extraction() {
     let db = test_db();
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("test"))
-        .unwrap();
+    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("test")).unwrap();
 
     let topics = db.list_topics(None);
     let topic = &topics[0];

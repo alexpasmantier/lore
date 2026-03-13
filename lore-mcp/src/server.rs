@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use lore_db::{LoreDb, Fragment, FragmentId, Storage, Tree};
+use lore_db::{Fragment, FragmentId, LoreDb, Storage, Tree};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};

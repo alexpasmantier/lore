@@ -4,6 +4,7 @@ members = [
     "lore-db",
     "lore-mcp",
     "lore-daemon",
+    "lore-tray",
 ]
 
 [workspace.dependencies]

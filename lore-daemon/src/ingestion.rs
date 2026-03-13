@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use lore_db::{EdgeKind, LoreDb, Fragment, FragmentId};
+use lore_db::{EdgeKind, Fragment, FragmentId, LoreDb};
 
 use crate::claude_client::ClaudeClient;
 use crate::parser::{format_conversation_batch, ConversationTurn};
