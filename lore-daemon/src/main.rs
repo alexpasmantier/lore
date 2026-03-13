@@ -291,6 +291,16 @@ fn run_ingestion_pass(
     Ok(())
 }
 
+/// Check if a daemon process is already running (owns the status file).
+fn daemon_is_running() -> bool {
+    if let Some(s) = status::read_status() {
+        let pid = s.pid as i32;
+        pid > 0 && pid != std::process::id() as i32 && unsafe { libc::kill(pid, 0) } == 0
+    } else {
+        false
+    }
+}
+
 async fn run_single_ingest(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = config.db_path();
     if let Some(parent) = db_path.parent() {
@@ -300,9 +310,14 @@ async fn run_single_ingest(config: Config) -> Result<(), Box<dyn std::error::Err
     let db = LoreDb::new(storage);
     let watcher = FileWatcher::new();
 
-    status::write_status(status::DaemonState::Ingesting);
+    let daemon_running = daemon_is_running();
+    if !daemon_running {
+        status::write_status(status::DaemonState::Ingesting);
+    }
     let result = run_ingestion_pass(&db, &watcher);
-    status::write_status(status::DaemonState::Idle);
+    if !daemon_running {
+        status::clear_status();
+    }
     result?;
     tracing::info!("Single ingestion pass complete.");
     Ok(())
@@ -317,9 +332,14 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
         config.ingestion.claude_model.clone(),
     );
 
-    status::write_status(status::DaemonState::Consolidating);
+    let daemon_running = daemon_is_running();
+    if !daemon_running {
+        status::write_status(status::DaemonState::Consolidating);
+    }
     let result = consolidation::run_consolidation(&db, Some(&client), &config.consolidation).await;
-    status::write_status(status::DaemonState::Idle);
+    if !daemon_running {
+        status::clear_status();
+    }
     result?;
     tracing::info!("Single consolidation pass complete.");
     Ok(())
