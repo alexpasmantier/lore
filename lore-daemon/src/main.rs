@@ -337,7 +337,10 @@ async fn run_single_ingest(config: Config) -> Result<(), Box<dyn std::error::Err
 
     let watcher = FileWatcher::new();
 
-    run_ingestion_pass(&db, &watcher, &client, config.ingestion.batch_size).await?;
+    status::write_status(status::DaemonState::Ingesting);
+    let result = run_ingestion_pass(&db, &watcher, &client, config.ingestion.batch_size).await;
+    status::write_status(status::DaemonState::Idle);
+    result?;
     tracing::info!("Single ingestion pass complete.");
     Ok(())
 }
@@ -351,7 +354,10 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
         config.ingestion.claude_model.clone(),
     );
 
-    consolidation::run_consolidation(&db, Some(&client), &config.consolidation).await?;
+    status::write_status(status::DaemonState::Consolidating);
+    let result = consolidation::run_consolidation(&db, Some(&client), &config.consolidation).await;
+    status::write_status(status::DaemonState::Idle);
+    result?;
     tracing::info!("Single consolidation pass complete.");
     Ok(())
 }
