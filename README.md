@@ -4,61 +4,6 @@ Long-term memory for AI agents. Lore watches past conversations, extracts what w
 
 Multiple agent sessions can query the same knowledge base on a single machine, or point at a central server for shared memory across a group of users, a team, a company.
 
-## How it works
-
-Lore runs as a background daemon that watches your conversation logs, stages new turns, and periodically digests them into a knowledge database. Agents query it through MCP tools using an iterative search→read workflow that keeps context lean.
-
-Knowledge is organized as **interconnected abstraction trees** — broad concepts at the roots, conversation-specific details at the leaves, with associative edges linking related ideas across trees.
-
-```
-"Rust error handling"                     depth 0 — broad concept
-├── "anyhow vs thiserror trade-offs"      depth 1 — narrower aspect
-│   └── "anyhow for apps, thiserror..."   depth 2 — specific finding
-└── "error propagation patterns"          depth 1
-    └── "? operator with custom From..."  depth 2
-```
-
-### For agents (MCP)
-
-Agents interact through 6 tools. Search returns IDs only — content is loaded on demand, so context stays minimal:
-
-1. **`search(query, parent_id?)`** → ranked IDs (no content)
-2. **`read(id)`** → content + children/association IDs
-3. **`list_roots`** → top-level knowledge areas
-4. **`store / update / delete`** → write operations
-
-Workflow: search → read → search deeper → read → repeat until you have what you need.
-
-### For humans (CLI)
-
-```sh
-lore roots              # what do I know?
-lore query "error handling"  # semantic search
-lore explore <id>       # show subtree
-lore status             # daemon running?
-lore staged             # conversations awaiting digestion
-```
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│              Agent sessions (any number)                  │
-└──────────┬───────────────────────────────────────────────┘
-           │ MCP (stdio / SSE)
-           ▼
-┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│    lore-mcp      │    │      lore        │    │    lore-tray     │
-│  (MCP server)    │    │  (CLI + daemon)  │    │  (desktop app)   │
-└────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘
-         │                       │                        │
-         ▼                       ▼                        ▼
-    ┌────────────────────────────────────────────────────────────┐
-    │                    ~/.lore/memory.db                        │
-    │              SQLite · WAL mode · Local embeddings           │
-    └────────────────────────────────────────────────────────────┘
-```
-
 ## Install
 
 ### macOS
@@ -92,6 +37,40 @@ cp target/release/lore-mcp ~/.local/bin/
 claude mcp add --scope user memory -- lore-mcp
 ```
 
+## Usage
+
+### CLI
+
+```sh
+# Daemon
+lore start              # run daemon in foreground
+lore daemonize          # run daemon in background
+lore stop               # stop background daemon
+lore status             # check if running
+lore logs               # tail daemon log
+
+# Data pipeline
+lore ingest             # stage new conversation turns
+lore consolidate        # digest staged turns + run consolidation
+
+# Query
+lore roots              # list root-level fragments
+lore query "text"       # semantic search
+lore explore <id>       # show subtree (supports ID prefix)
+lore staged             # show staging area
+```
+
+### Desktop app
+
+The Lore tray icon lives in your menu bar / system tray. It automatically starts the daemon when launched and stops it on quit.
+
+| State | Appearance |
+|-------|------------|
+| **Stopped** | Dim red |
+| **Idle** | Bright red |
+| **Ingesting** | Red, pulsing |
+| **Consolidating** | Orange, pulsing |
+
 ## Configuration
 
 `~/.lore/config.toml`:
@@ -111,6 +90,10 @@ merge_threshold = 0.85
 [database]
 path = "~/.lore/memory.db"
 ```
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — knowledge model, pipeline, MCP tools, relevance model
 
 ## Development
 
