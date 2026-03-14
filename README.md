@@ -1,81 +1,74 @@
 # lore
 
-Empirical memory for AI agents. Lore builds a centralized knowledge base from experience — it watches past conversations across all sessions and projects, extracts what was learned, and organizes it into a centralized database that any agent can query. Knowledge accumulated in one context is available to every future agent. Over time, a background consolidation process merges duplicates, resolves contradictions, and lets unused knowledge fade.
+**Long-term memory for AI agents.**
 
-Agents query the database through [MCP](https://modelcontextprotocol.io) tools using an iterative search→read workflow. Queries blend semantic similarity with a time-decaying relevance score — frequently accessed and recent knowledge surfaces first, while stale fragments naturally fade.
+AI agents start every conversation from scratch. They have no memory of what they learned yesterday — the architectural decisions, the debugging breakthroughs, the user preferences, the project conventions. Lore changes that.
+
+Lore watches past conversations, extracts what was learned, and builds a persistent knowledge base that any agent can query. Knowledge accumulated in one session is available to every future session, across all projects. Over time, important memories strengthen while stale ones naturally fade — just like biological memory.
+
+## Why lore
+
+- **Agents that learn from experience.** Every conversation leaves behind knowledge. Lore captures it automatically — no manual note-taking, no copy-paste.
+- **Cross-session, cross-project.** A bug fix discovered in one project informs work in another. A user preference stated once persists forever.
+- **Shared memory across agents.** Lore runs as an [MCP](https://modelcontextprotocol.io) server. Multiple agent sessions query the same knowledge base — on a single machine, or across a team via a central server.
+- **Memory that behaves like memory.** Relevance decays over time. Frequently accessed knowledge stays fresh. Unused knowledge fades. Important insights never fully disappear.
 
 ## How it works
 
-Knowledge is organized as interconnected abstraction trees. Higher nodes capture general concepts; deeper nodes stay closer to the specifics of the original conversation. Associative edges link related fragments across different trees. Every node is a self-contained piece of knowledge.
+Lore runs as a background daemon that watches your conversation logs, stages new turns, and periodically digests them into a knowledge database. Agents query it through MCP tools using an iterative search→read workflow that keeps context lean.
 
-| Depth | Abstraction | Example |
-|-------|-------------|---------|
-| 0 | Broad concept | "Rust async programming" |
-| 1 | Narrower aspect | "tokio runtime model and trade-offs" |
-| 2 | Specific finding | "work-stealing scheduler causes issues with CPU-bound tasks" |
-| 3+ | Concrete detail | "`#[tokio::main(flavor = \"multi_thread\")]` needed for CPU-bound" |
+Knowledge is organized as **interconnected abstraction trees** — broad concepts at the roots, conversation-specific details at the leaves, with associative edges linking related ideas across trees.
 
-### Relevance model
+```
+"Rust error handling"                     depth 0 — broad concept
+├── "anyhow vs thiserror trade-offs"      depth 1 — narrower aspect
+│   └── "anyhow for apps, thiserror..."   depth 2 — specific finding
+└── "error propagation patterns"          depth 1
+    └── "? operator with custom From..."  depth 2
+```
 
-Fragments have a relevance score that decays exponentially over time (Ebbinghaus forgetting curve). Reading a fragment resets its decay timer and spreads a small activation boost to neighbors. Each additional access increases strength with diminishing returns.
+### For agents (MCP)
 
-During extraction, fragments are classified as high, medium, or low importance. Importance controls the decay rate and sets a relevance floor — high-importance fragments never fully decay, even if never accessed.
+Agents interact through 6 tools. Search returns IDs only — content is loaded on demand, so context stays minimal:
 
-Query results are ranked by `0.7 * semantic_similarity + 0.3 * relevance`, so stale fragments rank lower even when they're a good semantic match. Fragments below the visibility threshold (0.05) are excluded from results entirely.
+1. **`search(query, parent_id?)`** → ranked IDs (no content)
+2. **`read(id)`** → content + children/association IDs
+3. **`list_roots`** → top-level knowledge areas
+4. **`store / update / delete`** → write operations
+
+Workflow: search → read → search deeper → read → repeat until you have what you need.
+
+### For humans (CLI)
+
+```sh
+lore roots              # what do I know?
+lore query "error handling"  # semantic search
+lore explore <id>       # show subtree
+lore status             # daemon running?
+lore staged             # conversations awaiting digestion
+```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│          Any agent / session            │
-└──────────┬──────────────────────────────┘
-           │ stdio (JSON-RPC)
+┌──────────────────────────────────────────────────────────┐
+│              Agent sessions (any number)                  │
+└──────────┬───────────────────────────────────────────────┘
+           │ MCP (stdio / SSE)
            ▼
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │    lore-mcp      │    │      lore        │    │    lore-tray     │
-│   (MCP server)   │    │  (CLI + daemon)  │    │  (desktop app)   │
-│                  │    │                  │    │                  │
-│  6 tools for     │    │  Staging loop    │    │  Auto-manages    │
-│  agents          │    │  Consolidation   │    │  daemon lifecycle│
-│                  │    │  (8 phases)      │    │                  │
+│  (MCP server)    │    │  (CLI + daemon)  │    │  (desktop app)   │
 └────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘
-         │ read                  │ read/write             │ reads
+         │                       │                        │
          ▼                       ▼                        ▼
-    ┌───────────────────────────────────┐  ┌──────────────────────┐
-    │        ~/.lore/memory.db          │  │ ~/.lore/daemon.status│
-    │        (SQLite + WAL mode)        │  │      (JSON)          │
-    │                                   │  └──────────────────────┘
-    │  Fragments · Edges · Watermarks   │
-    │  Staged turns                     │
-    └───────────────────────────────────┘
+    ┌────────────────────────────────────────────────────────────┐
+    │                    ~/.lore/memory.db                        │
+    │              SQLite · WAL mode · Local embeddings           │
+    └────────────────────────────────────────────────────────────┘
 ```
 
-**Crates:**
-
-- **lore-db** — Core library. Stores knowledge as interconnected abstraction trees in SQLite with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`).
-- **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the knowledge base to any connected agent.
-- **lore-daemon** — CLI and background daemon. Stages conversation turns from `~/.claude/projects/`, digests them with full context during consolidation, and provides interactive query commands. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Produces the `lore` binary.
-- **lore-tray** — Desktop app (HAL 9000 style tray icon). Auto-starts and stops the daemon. Packaged as macOS `.app` or Linux `.desktop`.
-- **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
-
-### Two-phase pipeline
-
-**Ingestion** runs every 30 seconds, reading new conversation turns from JSONL files and staging them in SQLite. This is instant — no API calls, no latency. Watermarks track progress per file. Session metadata (project path, git branch) is extracted from the JSONL and passed to the extraction prompt.
-
-**Consolidation** runs periodically (default: every 2 hours) and walks the entire graph:
-
-| Phase | Name | What it does |
-|-------|------|-------------|
-| 0 | Digestion | Extracts knowledge from idle staged conversations (full context) |
-| 1 | Relevance recomputation | Recomputes all relevance scores based on time decay |
-| 2 | Root merging | Merges near-duplicate roots (configurable threshold, default 0.85) |
-| 3 | Associative linking | Creates cross-branch edges between related concepts |
-| 4 | Re-summarization | Regenerates root overviews when children have changed |
-| 5 | Contradiction resolution | Batch-checks sibling pairs for contradictions, supersedes the older one |
-| 6 | Edge pruning | Decays associative edge weights by 5%, prunes below 0.15 |
-| 7 | Fragment pruning | Deletes fragments with negligible relevance and no access history |
-
-Phase 0 only digests sessions that have been idle for 5 minutes (configurable), so active conversations are left alone until they're complete. Large conversations are automatically chunked.
+The MCP server is stateless — it reads from the same SQLite database the daemon writes to. This means you can run multiple MCP server instances (one per agent session) against the same knowledge base, or point them at a shared database on a central server.
 
 ## Install
 
@@ -86,7 +79,7 @@ just bundle-macos
 cp -r target/Lore.app ~/Applications/
 ```
 
-Launch **Lore** from Spotlight or Finder. The app runs as a menu bar icon — it auto-starts the daemon in the background and stops it on quit. To start on login, add it via **System Settings > General > Login Items**.
+Launch **Lore** from Spotlight. It runs as a menu bar icon, auto-managing the background daemon.
 
 ### Linux
 
@@ -95,85 +88,22 @@ sudo apt install libgtk-3-dev libayatana-appindicator3-dev  # Debian/Ubuntu
 just install-linux
 ```
 
-This installs the binaries to `~/.local/bin/` and registers a `.desktop` entry so **Lore** appears in your application launcher.
-
-> **GNOME users:** The system tray requires the AppIndicator extension. On Ubuntu: `gnome-extensions enable ubuntu-appindicators@ubuntu.com`. On other GNOME distros: install and enable `gnome-shell-extension-appindicator`.
-
-### Manual install
+### CLI only
 
 ```sh
-cargo build --release -p lore-mcp -p lore-daemon -p lore-tray
-cp target/release/lore target/release/lore-{mcp,tray} ~/.local/bin/
+cargo build --release -p lore-daemon
+cp target/release/lore ~/.local/bin/
 ```
 
-### MCP server registration
-
-Register the MCP server (user-level, all sessions):
+### MCP server
 
 ```sh
+cargo build --release -p lore-mcp
+cp target/release/lore-mcp ~/.local/bin/
 claude mcp add --scope user memory -- lore-mcp
 ```
 
-## Usage
-
-### Desktop app
-
-The Lore tray icon lives in your menu bar / system tray. It automatically starts the daemon when launched and stops it on quit. The icon reflects the daemon's current state:
-
-| State | Appearance |
-|-------|------------|
-| **Stopped** | Dim red — the eye is barely glowing |
-| **Idle** | Bright red — full intensity |
-| **Ingesting** | Red, pulsing — breathing animation |
-| **Consolidating** | Orange, pulsing — breathing animation |
-
-The context menu shows the current version and status, and provides controls to:
-
-- **Start / Stop Daemon** — toggle the background daemon
-- **Trigger Ingestion** — stage new conversation turns immediately
-- **Trigger Consolidation** — digest staged conversations and run all consolidation phases
-- **View Logs** — opens `~/.lore/daemon.log`
-- **Quit** — stop the daemon and exit
-
-### MCP tools
-
-Agents interact with lore through an iterative search→read workflow. Each step is lightweight — content is only loaded when explicitly read.
-
-| Tool | Description |
-|------|-------------|
-| `search` | Semantic search. Returns IDs and scores only — no content. Optional `parent_id` to scope to a subtree. |
-| `read` | Read a fragment's content + its children/association IDs for navigation. |
-| `list_roots` | List root-level fragment IDs and child counts. |
-| `store` | Store a piece of knowledge with content, optional parent, and depth. |
-| `update` | Update a fragment's content (embedding recomputed). |
-| `delete` | Remove a fragment and its edges. |
-
-Workflow: `search` → `read` → `search(parent_id=...)` → `read` → repeat until sufficient detail.
-
-### CLI
-
-The `lore` command provides both daemon management and interactive queries:
-
-```sh
-# Daemon
-lore start              # run daemon in foreground
-lore daemonize          # run daemon in background
-lore stop               # stop background daemon
-lore status             # check if running
-lore logs               # tail daemon log
-
-# Data pipeline
-lore ingest             # stage new conversation turns
-lore consolidate        # digest staged turns + run consolidation
-
-# Query
-lore roots              # list root-level fragments
-lore query "text"       # semantic search
-lore explore <id>       # show subtree (supports ID prefix)
-lore staged             # show staging area
-```
-
-### Configuration
+## Configuration
 
 `~/.lore/config.toml`:
 
@@ -188,7 +118,6 @@ idle_threshold_secs = 300       # wait 5 min before digesting a session
 max_turns_per_extraction = 200  # chunk large conversations
 similarity_threshold = 0.8
 merge_threshold = 0.85
-min_relevance_prune = 0.02
 
 [database]
 path = "~/.lore/memory.db"
@@ -200,7 +129,4 @@ path = "~/.lore/memory.db"
 cargo build              # build all crates
 cargo test               # 105 tests
 cargo clippy --workspace # lint
-cargo fmt --all          # format
 ```
-
-Tests cover unit tests across all crates, behavioral tests for the relevance model (decay, reinforcement, spreading activation, importance, forgetting), and integration scenarios that run fixture conversations through the full pipeline.
