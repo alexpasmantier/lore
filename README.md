@@ -93,6 +93,7 @@ path = "~/.lore/memory.db"
 
 ## Documentation
 
+- [Setup](docs/setup.md) — single machine and central server deployment
 - [Architecture](docs/architecture.md) — knowledge model, pipeline, MCP tools, relevance model
 
 ## Development
