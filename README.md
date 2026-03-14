@@ -4,7 +4,7 @@ Long-term memory for AI agents. Lore watches past conversations, extracts what w
 
 Knowledge accumulated in one session is available to every future session, across all projects. Relevance decays over time — frequently accessed knowledge stays fresh, unused knowledge fades.
 
-The MCP server is stateless and reads from a shared SQLite database. Multiple agent sessions can query the same knowledge base on a single machine, or point at a central server for shared memory across a team.
+The MCP server is stateless and reads from a shared SQLite database. Multiple agent sessions can query the same knowledge base on a single machine, or point at a central server for shared memory across a group of users, a team, a company.
 
 ## How it works
 
