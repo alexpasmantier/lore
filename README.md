@@ -1,8 +1,8 @@
 # lore
 
-Long-term memory for AI agents. Lore extracts knowledge from past agent sessions and stores it in a persistent database that any agent can query. Knowledge accumulated in one session is available to every future session, across all projects.
+Centralized long-term memory for AI agents.
 
-Multiple agent sessions can query the same knowledge base on a single machine, or point at a central server for shared memory across a group of users, a team, a company.
+Lore extracts knowledge from past agent sessions and stores it in a database that any agent can query. Multiple agents can share the same knowledge base locally, or across machines through a central server.
 
 ## Install
 
