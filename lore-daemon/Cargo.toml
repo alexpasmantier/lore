@@ -21,3 +21,4 @@ tracing-subscriber = { workspace = true }
 libc = "0.2"
 dirs = { workspace = true }
 futures = "0.3"
+hostname = "0.4"

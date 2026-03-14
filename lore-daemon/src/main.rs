@@ -81,6 +81,14 @@ enum Command {
     },
     /// Show what's in the staging area
     Staged,
+    /// Push staged turns to a remote lore server
+    Sync {
+        /// Server URL (e.g. http://localhost:8080)
+        remote: String,
+        /// Client identifier (defaults to hostname)
+        #[arg(long)]
+        client_id: Option<String>,
+    },
 }
 
 fn lore_home() -> PathBuf {
@@ -167,6 +175,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth,
                     limit,
                 } => cli_query(config, &topic, depth, limit)?,
+                Command::Sync { remote, client_id } => {
+                    cli_sync(config, &remote, client_id.as_deref()).await?
+                }
                 _ => unreachable!(),
             }
             Ok::<(), Box<dyn std::error::Error>>(())
@@ -619,6 +630,79 @@ fn cli_staged(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         total_turns += s.turn_count;
     }
     println!("\n{} sessions, {} total turns", sessions.len(), total_turns);
+    Ok(())
+}
+
+async fn cli_sync(
+    config: Config,
+    remote: &str,
+    client_id: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = open_db(&config)?;
+    let now = lore_db::fragment::now_unix();
+
+    // Get all staged sessions (threshold=0 means all, not just idle)
+    let sessions = db.storage().get_staged_sessions(0, now + 1)?;
+    if sessions.is_empty() {
+        println!("Nothing to sync.");
+        return Ok(());
+    }
+
+    let client_id = client_id
+        .map(String::from)
+        .or_else(|| hostname::get().ok().and_then(|h| h.into_string().ok()))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Collect all turns
+    let mut push_turns = Vec::new();
+    for session in &sessions {
+        let turns = db.storage().get_staged_turns(&session.file_path)?;
+        for turn in &turns {
+            push_turns.push(serde_json::json!({
+                "session": session.file_path,
+                "role": turn.role,
+                "text": turn.text,
+            }));
+        }
+    }
+
+    let total = push_turns.len();
+    let body = serde_json::json!({
+        "client_id": client_id,
+        "turns": push_turns,
+    });
+
+    let url = format!("{}/push", remote.trim_end_matches('/'));
+    println!(
+        "Syncing {} turns from {} sessions to {}...",
+        total,
+        sessions.len(),
+        url
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?;
+
+    if resp.status().is_success() {
+        let result: serde_json::Value = resp.json().await?;
+        println!(
+            "Synced: {} turns staged on server.",
+            result["staged"].as_u64().unwrap_or(0)
+        );
+
+        // Clear local staged turns that were synced
+        for session in &sessions {
+            db.storage().delete_staged_turns(&session.file_path)?;
+        }
+        println!("Local staging area cleared.");
+    } else {
+        eprintln!("Server error: {} {}", resp.status(), resp.text().await?);
+    }
+
     Ok(())
 }
 
