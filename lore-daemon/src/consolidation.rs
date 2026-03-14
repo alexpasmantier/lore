@@ -4,7 +4,7 @@ use lore_db::{cosine_similarity, EdgeKind, Fragment, FragmentId, LoreDb};
 use crate::claude_client::ClaudeClient;
 use crate::config::ConsolidationConfig;
 use crate::ingestion;
-use crate::parser::ConversationTurn;
+use crate::parser::{self, ConversationTurn};
 
 /// Run all consolidation phases.
 pub async fn run_consolidation(
@@ -133,7 +133,7 @@ async fn phase0_digest_staged(
         tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
 
         // Read session metadata from the JSONL file
-        let meta = crate::parser::read_session_metadata(&session.file_path);
+        let meta = parser::read_session_metadata(&session.file_path);
         let session_ctx = ingestion::SessionContext {
             cwd: meta.cwd,
             git_branch: meta.git_branch,
@@ -145,42 +145,17 @@ async fn phase0_digest_staged(
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
-        // Build existing root context
-        let existing_roots: Vec<ingestion::ExistingRootContext> = db
-            .list_roots(None)
-            .into_iter()
-            .map(|t| {
-                let children_content = db.children(t.id).into_iter().map(|c| c.content).collect();
-                ingestion::ExistingRootContext {
-                    id: t.id.to_string(),
-                    content: t.content.clone(),
-                    children_content,
-                }
-            })
-            .collect();
-
-        // Chunk large conversations
-        let chunks: Vec<&[ConversationTurn]> = if turns.len() > config.max_turns_per_extraction {
-            turns.chunks(config.max_turns_per_extraction).collect()
-        } else {
-            vec![&turns]
-        };
-
-        for chunk in &chunks {
-            match ingestion::extract_knowledge(client, chunk, &existing_roots, Some(&session_ctx))
-                .await
-            {
-                Ok(knowledge) => {
-                    match ingestion::store_knowledge(db, &knowledge, session_id.as_deref()) {
-                        Ok(count) => {
-                            total_fragments += count;
-                            tracing::info!("Stored {} fragments", count);
-                        }
-                        Err(e) => tracing::error!("Storage failed (continuing): {}", e),
+        match ingestion::extract_abstraction_tree(client, &turns, Some(&session_ctx)).await {
+            Ok(levels) => {
+                match ingestion::store_abstraction_tree(db, &levels, session_id.as_deref()) {
+                    Ok(count) => {
+                        total_fragments += count;
+                        tracing::info!("Stored {} fragments ({} levels)", count, levels.len());
                     }
+                    Err(e) => tracing::error!("Storage failed (continuing): {}", e),
                 }
-                Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
             }
+            Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
         }
 
         db.storage().delete_staged_turns(&session.file_path)?;

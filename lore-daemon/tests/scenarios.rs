@@ -6,7 +6,7 @@
 
 use lore_daemon::config::ConsolidationConfig;
 use lore_daemon::consolidation;
-use lore_daemon::ingestion::{ExtractedEntry, ExtractedKnowledge, ExtractedNode};
+use lore_daemon::ingestion::store_abstraction_tree;
 use lore_daemon::parser::parse_jsonl_line;
 use lore_db::edge::EdgeKind;
 use lore_db::fragment::{now_unix, Fragment};
@@ -51,85 +51,51 @@ const CONVERSATION_TOOL_ONLY: &str = r#"{"type":"assistant","message":{"role":"a
 // FIXTURE EXTRACTIONS (simulated Claude extraction output)
 // ════════════════════════════════════════════════════════════════════════
 
-fn extraction_rust_errors() -> ExtractedKnowledge {
-    ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: None,
-            content: "Rust error handling architecture: For library code, use thiserror to define structured error types with \
-                      specific variants callers can match on. For application code, use anyhow \
-                      for ergonomic error propagation. The choice depends on whether callers \
-                      need to match on specific error variants."
-                .to_string(),
-            importance: "high".to_string(),
-            children: vec![ExtractedNode {
-                content: "thiserror gotchas for library authors: Three key gotchas: (1) Don't expose third-party error types in \
-                          public API — creates semver coupling. (2) Be careful with #[from] — \
-                          can create ambiguous From impls. (3) Box large error variants to \
-                          avoid inflating Result size."
-                    .to_string(),
-                importance: "high".to_string(),
-                children: vec![],
-            }],
-        }],
-    }
+fn extraction_rust_errors() -> Vec<String> {
+    vec![
+        "Rust error handling architecture: For library code, use thiserror to define structured error types with \
+         specific variants callers can match on. For application code, use anyhow \
+         for ergonomic error propagation. The choice depends on whether callers \
+         need to match on specific error variants."
+            .to_string(),
+        "thiserror gotchas for library authors: Three key gotchas: (1) Don't expose third-party error types in \
+         public API — creates semver coupling. (2) Be careful with #[from] — \
+         can create ambiguous From impls. (3) Box large error variants to \
+         avoid inflating Result size."
+            .to_string(),
+    ]
 }
 
-fn extraction_debugging() -> ExtractedKnowledge {
-    ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: None,
-            content: "RefCell vs Mutex usage: User correction: Don't use Mutex for single-threaded code. RefCell is \
-                      appropriate for single-threaded interior mutability. When encountering \
-                      BorrowMutError, restructure borrows to avoid overlapping immutable and \
-                      mutable borrows."
-                .to_string(),
-            importance: "high".to_string(),
-            children: vec![ExtractedNode {
-                content: "RefCell BorrowMutError debugging: Classic pitfall: RefCell runtime borrow checking can cause \
-                          BorrowMutError when immutable and mutable borrows overlap. Fix by \
-                          scoping borrows or dropping the immutable borrow before taking a \
-                          mutable one."
-                    .to_string(),
-                importance: "medium".to_string(),
-                children: vec![],
-            }],
-        }],
-    }
+fn extraction_debugging() -> Vec<String> {
+    vec![
+        "RefCell vs Mutex usage: User correction: Don't use Mutex for single-threaded code. RefCell is \
+         appropriate for single-threaded interior mutability. When encountering \
+         BorrowMutError, restructure borrows to avoid overlapping immutable and \
+         mutable borrows."
+            .to_string(),
+        "RefCell BorrowMutError debugging: Classic pitfall: RefCell runtime borrow checking can cause \
+         BorrowMutError when immutable and mutable borrows overlap. Fix by \
+         scoping borrows or dropping the immutable borrow before taking a \
+         mutable one."
+            .to_string(),
+    ]
 }
 
-fn extraction_async_patterns() -> ExtractedKnowledge {
-    ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: None,
-            content: "Tokio graceful shutdown pattern: Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
-                      Main loop selects on work and shutdown signal. Finish current work items \
-                      but stop accepting new ones."
-                .to_string(),
-            importance: "medium".to_string(),
-            children: vec![
-                ExtractedNode {
-                    content: "CancellationToken for long tasks: For long-running tasks, pass a CancellationToken and check it \
-                              periodically. Never use task::abort() — it can leave resources \
-                              in an inconsistent state."
-                        .to_string(),
-                    importance: "medium".to_string(),
-                    children: vec![],
-                },
-                ExtractedNode {
-                    content: "Shutdown signal handling: Use tokio::select! to multiplex work and shutdown signals. \
-                              The watch channel pattern ensures all tasks see the shutdown \
-                              notification without polling."
-                        .to_string(),
-                    importance: "low".to_string(),
-                    children: vec![],
-                },
-            ],
-        }],
-    }
+fn extraction_async_patterns() -> Vec<String> {
+    vec![
+        "Tokio graceful shutdown pattern: Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
+         Main loop selects on work and shutdown signal. Finish current work items \
+         but stop accepting new ones."
+            .to_string(),
+        "CancellationToken for long tasks: For long-running tasks, pass a CancellationToken and check it \
+         periodically. Never use task::abort() — it can leave resources \
+         in an inconsistent state."
+            .to_string(),
+    ]
 }
 
-fn extraction_chatter() -> ExtractedKnowledge {
-    ExtractedKnowledge { roots: vec![] }
+fn extraction_chatter() -> Vec<String> {
+    vec![]
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -147,22 +113,11 @@ fn default_consolidation_config() -> ConsolidationConfig {
 
 /// Store extracted knowledge and return the DB for further assertions.
 fn ingest_all(db: &LoreDb) {
-    lore_daemon::ingestion::store_knowledge(
-        db,
-        &extraction_rust_errors(),
-        Some("session-rust-errors"),
-    )
-    .unwrap();
-    lore_daemon::ingestion::store_knowledge(db, &extraction_debugging(), Some("session-debugging"))
+    store_abstraction_tree(db, &extraction_rust_errors(), Some("session-rust-errors")).unwrap();
+    store_abstraction_tree(db, &extraction_debugging(), Some("session-debugging")).unwrap();
+    store_abstraction_tree(db, &extraction_async_patterns(), Some("session-async-patterns"))
         .unwrap();
-    lore_daemon::ingestion::store_knowledge(
-        db,
-        &extraction_async_patterns(),
-        Some("session-async-patterns"),
-    )
-    .unwrap();
-    lore_daemon::ingestion::store_knowledge(db, &extraction_chatter(), Some("session-chatter"))
-        .unwrap();
+    store_abstraction_tree(db, &extraction_chatter(), Some("session-chatter")).unwrap();
 }
 
 /// Parse a fixture JSONL string and return the turns.
@@ -276,66 +231,31 @@ fn children_are_stored_with_correct_depth() {
 #[test]
 fn importance_is_set_correctly_from_extraction() {
     let db = test_db();
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("test")).unwrap();
+    store_abstraction_tree(&db, &extraction_rust_errors(), Some("test")).unwrap();
 
     let topics = db.list_roots(None);
     let topic = &topics[0];
-    // "high" importance → 0.9
+    // Root (depth 0) gets "high" importance → 0.9
     assert!(
         (topic.importance - 0.9).abs() < 0.01,
-        "High importance should map to 0.9, got {}",
+        "Root importance should map to 0.9, got {}",
         topic.importance
     );
 
     let children = db.children(topic.id);
     assert_eq!(children.len(), 1);
+    // Leaf in a 2-level tree gets "low" importance → 0.2
     assert!(
-        (children[0].importance - 0.9).abs() < 0.01,
-        "Child with high importance should map to 0.9"
-    );
-}
-
-#[test]
-fn temporal_edges_link_sequential_siblings() {
-    let db = test_db();
-    // Async patterns has 2 children under its topic — they should get a temporal edge
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_async_patterns(), Some("test"))
-        .unwrap();
-
-    let topics = db.list_roots(None);
-    let children = db.children(topics[0].id);
-    assert_eq!(
-        children.len(),
-        2,
-        "Async patterns topic should have 2 children"
-    );
-
-    // Find temporal edge between first and second child
-    let edges = db.storage().get_edges_for(children[0].id).unwrap();
-    let temporal: Vec<_> = edges
-        .iter()
-        .filter(|e| e.kind == EdgeKind::Temporal)
-        .collect();
-    assert_eq!(
-        temporal.len(),
-        1,
-        "First sibling should have one temporal edge"
-    );
-    assert_eq!(
-        temporal[0].target, children[1].id,
-        "Temporal edge should point to second sibling"
+        (children[0].importance - 0.2).abs() < 0.01,
+        "Leaf importance should map to 0.2, got {}",
+        children[0].importance
     );
 }
 
 #[test]
 fn source_session_is_recorded() {
     let db = test_db();
-    lore_daemon::ingestion::store_knowledge(
-        &db,
-        &extraction_rust_errors(),
-        Some("my-project-abc123"),
-    )
-    .unwrap();
+    store_abstraction_tree(&db, &extraction_rust_errors(), Some("my-project-abc123")).unwrap();
 
     let topics = db.list_roots(None);
     assert_eq!(
@@ -348,9 +268,7 @@ fn source_session_is_recorded() {
 #[test]
 fn empty_extraction_stores_nothing() {
     let db = test_db();
-    let count =
-        lore_daemon::ingestion::store_knowledge(&db, &extraction_chatter(), Some("chatter"))
-            .unwrap();
+    let count = store_abstraction_tree(&db, &extraction_chatter(), Some("chatter")).unwrap();
     assert_eq!(count, 0);
     assert_eq!(db.list_roots(None).len(), 0);
 }
@@ -399,48 +317,41 @@ fn high_importance_memories_survive_months() {
 }
 
 #[test]
-fn low_importance_children_fade_over_time() {
+fn low_importance_leaf_fades_over_time() {
     let db = test_db();
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_async_patterns(), Some("test"))
-        .unwrap();
+    store_abstraction_tree(&db, &extraction_async_patterns(), Some("test")).unwrap();
 
     let day = 86400i64;
     let now = now_unix();
 
-    // Find the "low" importance child (Shutdown signal handling)
+    // The leaf (depth 1) gets "low" importance in a 2-level tree
     let topics = db.list_roots(None);
     let children = db.children(topics[0].id);
-    let low_child = children
-        .iter()
-        .find(|c| c.content.contains("Shutdown signal handling"))
-        .unwrap();
+    let leaf = &children[0];
     assert!(
-        (low_child.importance - 0.2).abs() < 0.01,
-        "Low importance should be 0.2"
+        (leaf.importance - 0.2).abs() < 0.01,
+        "Leaf importance should be 0.2 (low), got {}",
+        leaf.importance
     );
 
-    // After 180 days, low importance child should be nearly invisible
+    // After 180 days, the low-importance leaf should nearly vanish
     let future = now + 180 * day;
     db.storage().recompute_all_relevance(future).unwrap();
 
-    let low_after = db.storage().get_fragment(low_child.id).unwrap().unwrap();
+    let leaf_after = db.storage().get_fragment(leaf.id).unwrap().unwrap();
     assert!(
-        low_after.relevance_score < 0.08,
-        "Low importance should nearly vanish after 180 days, got {}",
-        low_after.relevance_score
+        leaf_after.relevance_score < 0.08,
+        "Low importance leaf should nearly vanish after 180 days, got {}",
+        leaf_after.relevance_score
     );
 
-    // Medium importance sibling should still be somewhat visible
-    let med_child = children
-        .iter()
-        .find(|c| c.content.contains("CancellationToken for long tasks"))
-        .unwrap();
-    let med_after = db.storage().get_fragment(med_child.id).unwrap().unwrap();
+    // The high-importance root should still be much more visible
+    let root_after = db.storage().get_fragment(topics[0].id).unwrap().unwrap();
     assert!(
-        med_after.relevance_score > low_after.relevance_score,
-        "Medium importance ({}) should outrank low importance ({}) after 180 days",
-        med_after.relevance_score,
-        low_after.relevance_score
+        root_after.relevance_score > leaf_after.relevance_score,
+        "High importance root ({}) should outrank low importance leaf ({}) after 180 days",
+        root_after.relevance_score,
+        leaf_after.relevance_score
     );
 }
 
@@ -456,7 +367,7 @@ fn access_rescues_a_fading_memory() {
     let t60 = now + 60 * day;
     db.storage().recompute_all_relevance(t60).unwrap();
 
-    // Find a medium-importance topic (Tokio shutdown)
+    // Find the Tokio shutdown topic
     let topic = db
         .list_roots(None)
         .into_iter()
@@ -609,89 +520,6 @@ fn associative_links_propagate_activation() {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// SCENARIO 5: Topic Augmentation
-// ════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn existing_topic_is_augmented_not_duplicated() {
-    let db = test_db();
-
-    // First ingestion: create the topic
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("session-1"))
-        .unwrap();
-
-    let topics_before = db.list_roots(None);
-    assert_eq!(topics_before.len(), 1);
-    let topic_id = topics_before[0].id;
-
-    // Second ingestion: reference the existing topic by ID
-    let augmentation = ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: Some(topic_id.to_string()),
-            content: "Updated: thiserror for libraries, anyhow for apps. Also consider \
-                      miette for user-facing error reports with source annotations."
-                .to_string(),
-            importance: "high".to_string(),
-            children: vec![ExtractedNode {
-                content: "miette for user-facing errors: miette provides fancy error reporting with source code annotations, \
-                          useful for CLI tools and compilers."
-                    .to_string(),
-                importance: "medium".to_string(),
-                children: vec![],
-            }],
-        }],
-    };
-
-    lore_daemon::ingestion::store_knowledge(&db, &augmentation, Some("session-2")).unwrap();
-
-    // Should still have 1 topic, not 2
-    let topics_after = db.list_roots(None);
-    assert_eq!(
-        topics_after.len(),
-        1,
-        "Augmentation should update, not duplicate"
-    );
-    assert_eq!(topics_after[0].id, topic_id, "Same topic ID should be kept");
-    assert!(
-        topics_after[0].content.contains("miette"),
-        "Content should be updated"
-    );
-
-    // But should now have 2 children (original + new)
-    let children = db.children(topic_id);
-    assert_eq!(
-        children.len(),
-        2,
-        "Augmentation should add new children to existing topic"
-    );
-}
-
-#[test]
-fn hallucinated_topic_id_creates_new_topic() {
-    let db = test_db();
-
-    let knowledge = ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
-            content: "This references a topic ID that doesn't exist.".to_string(),
-            importance: "medium".to_string(),
-            children: vec![],
-        }],
-    };
-
-    lore_daemon::ingestion::store_knowledge(&db, &knowledge, Some("test")).unwrap();
-
-    // Should create a new topic since the ID doesn't exist
-    let topics = db.list_roots(None);
-    assert_eq!(topics.len(), 1);
-    assert_ne!(
-        topics[0].id.to_string(),
-        "00000000-0000-0000-0000-000000000000",
-        "Should get a new UUID, not the hallucinated one"
-    );
-}
-
-// ════════════════════════════════════════════════════════════════════════
 // SCENARIO 6: Forgetting and Pruning Lifecycle
 // ════════════════════════════════════════════════════════════════════════
 
@@ -706,10 +534,10 @@ async fn consolidation_recomputes_relevance_for_all_fragments() {
         .unwrap();
 
     // Should have recomputed relevance for all fragments
-    // 3 topics + 1 + 1 + 2 children = 7 fragments total
+    // 3 trees × 2 levels each = 6 fragments total
     assert_eq!(
-        stats.relevance_updated, 7,
-        "Should recompute all 7 fragments"
+        stats.relevance_updated, 6,
+        "Should recompute all 6 fragments"
     );
 }
 
@@ -998,8 +826,8 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
         .find(|t| t.content.contains("Tokio"))
         .unwrap();
 
-    // Rust topic (high importance, recently accessed) should outrank
-    // Tokio topic (medium importance, never accessed)
+    // Rust topic (recently accessed at day 30) should outrank
+    // Tokio topic (never accessed, decaying since day 0)
     assert!(
         rust_at_60.relevance_score > tokio_at_60.relevance_score,
         "Recently accessed Rust topic ({:.3}) should outrank untouched Tokio topic ({:.3})",
@@ -1046,12 +874,10 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
     let now = now_unix();
 
     // Ingest from session 1
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("session-1"))
-        .unwrap();
+    store_abstraction_tree(&db, &extraction_rust_errors(), Some("session-1")).unwrap();
 
     // Ingest from session 2
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_debugging(), Some("session-2"))
-        .unwrap();
+    store_abstraction_tree(&db, &extraction_debugging(), Some("session-2")).unwrap();
 
     // Create an associative link between related topics
     let topics = db.list_roots(None);
@@ -1094,23 +920,18 @@ fn superseded_knowledge_is_invisible_but_retained() {
     let db = test_db();
 
     // Ingest initial knowledge
-    lore_daemon::ingestion::store_knowledge(&db, &extraction_rust_errors(), Some("v1")).unwrap();
+    store_abstraction_tree(&db, &extraction_rust_errors(), Some("v1")).unwrap();
 
     let topics_v1 = db.list_roots(None);
     let old_topic_id = topics_v1[0].id;
 
     // Ingest updated knowledge as a new topic (simulating contradiction resolution)
-    let updated = ExtractedKnowledge {
-        roots: vec![ExtractedEntry {
-            existing_id: None,
-            content: "Rust error handling (revised): Use thiserror for all library AND binary crates for consistency. \
-                      Anyhow is no longer recommended due to opaque error types."
-                .to_string(),
-            importance: "high".to_string(),
-            children: vec![],
-        }],
-    };
-    lore_daemon::ingestion::store_knowledge(&db, &updated, Some("v2")).unwrap();
+    let updated = vec![
+        "Rust error handling (revised): Use thiserror for all library AND binary crates for consistency. \
+         Anyhow is no longer recommended due to opaque error types."
+            .to_string(),
+    ];
+    store_abstraction_tree(&db, &updated, Some("v2")).unwrap();
 
     let all_topics = db.list_roots(None);
     let new_topic = all_topics
@@ -1151,47 +972,29 @@ fn importance_levels_produce_correct_decay_behavior() {
     let day = 86400i64;
     let now = now_unix();
 
-    // Create fragments with each importance level
-    let knowledge = ExtractedKnowledge {
-        roots: vec![
-            ExtractedEntry {
-                existing_id: None,
-                content: "Critical decision: A critical architectural decision.".to_string(),
-                importance: "high".to_string(),
-                children: vec![],
-            },
-            ExtractedEntry {
-                existing_id: None,
-                content: "Technical pattern: A useful technical pattern.".to_string(),
-                importance: "medium".to_string(),
-                children: vec![],
-            },
-            ExtractedEntry {
-                existing_id: None,
-                content: "Routine observation: A routine observation.".to_string(),
-                importance: "low".to_string(),
-                children: vec![],
-            },
-        ],
-    };
-    lore_daemon::ingestion::store_knowledge(&db, &knowledge, Some("test")).unwrap();
+    // Create a 3-level tree: root (high), middle (medium), leaf (low)
+    let levels = vec![
+        "Critical decision: A critical architectural decision.".to_string(),
+        "Technical pattern: A useful technical pattern.".to_string(),
+        "Routine observation: A routine observation.".to_string(),
+    ];
+    store_abstraction_tree(&db, &levels, Some("test")).unwrap();
 
     let topics = db.list_roots(None);
+    let high = &topics[0];
+    assert!(high.content.contains("Critical decision"));
 
-    // Verify decay rates are set correctly
-    let high = topics
-        .iter()
-        .find(|t| t.content.contains("Critical decision"))
-        .unwrap();
-    let med = topics
-        .iter()
-        .find(|t| t.content.contains("Technical pattern"))
-        .unwrap();
-    let low = topics
-        .iter()
-        .find(|t| t.content.contains("Routine observation"))
-        .unwrap();
+    let mid_children = db.children(high.id);
+    assert_eq!(mid_children.len(), 1);
+    let med = &mid_children[0];
+    assert!(med.content.contains("Technical pattern"));
 
+    let leaf_children = db.children(med.id);
+    assert_eq!(leaf_children.len(), 1);
+    let low = &leaf_children[0];
+    assert!(low.content.contains("Routine observation"));
+
+    // Verify decay rates: high importance decays slower
     assert!(
         high.decay_rate < med.decay_rate,
         "High importance should decay slower"
@@ -1210,19 +1013,9 @@ fn importance_levels_produce_correct_decay_behavior() {
     let t60 = now + 60 * day;
     db.storage().recompute_all_relevance(t60).unwrap();
 
-    let topics_60d = db.list_roots(None);
-    let high_60 = topics_60d
-        .iter()
-        .find(|t| t.content.contains("Critical decision"))
-        .unwrap();
-    let med_60 = topics_60d
-        .iter()
-        .find(|t| t.content.contains("Technical pattern"))
-        .unwrap();
-    let low_60 = topics_60d
-        .iter()
-        .find(|t| t.content.contains("Routine observation"))
-        .unwrap();
+    let high_60 = db.storage().get_fragment(high.id).unwrap().unwrap();
+    let med_60 = db.storage().get_fragment(med.id).unwrap().unwrap();
+    let low_60 = db.storage().get_fragment(low.id).unwrap().unwrap();
 
     assert!(
         high_60.relevance_score > med_60.relevance_score,
