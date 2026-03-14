@@ -1,17 +1,10 @@
 # lore
 
-**Long-term memory for AI agents.**
+Long-term memory for AI agents. Lore watches past conversations, extracts what was learned, and stores it in a persistent knowledge base that any agent can query via [MCP](https://modelcontextprotocol.io).
 
-AI agents start every conversation from scratch. They have no memory of what they learned yesterday — the architectural decisions, the debugging breakthroughs, the user preferences, the project conventions. Lore changes that.
+Knowledge accumulated in one session is available to every future session, across all projects. Relevance decays over time — frequently accessed knowledge stays fresh, unused knowledge fades.
 
-Lore watches past conversations, extracts what was learned, and builds a persistent knowledge base that any agent can query. Knowledge accumulated in one session is available to every future session, across all projects. Over time, important memories strengthen while stale ones naturally fade — just like biological memory.
-
-## Why lore
-
-- **Agents that learn from experience.** Every conversation leaves behind knowledge. Lore captures it automatically — no manual note-taking, no copy-paste.
-- **Cross-session, cross-project.** A bug fix discovered in one project informs work in another. A user preference stated once persists forever.
-- **Shared memory across agents.** Lore runs as an [MCP](https://modelcontextprotocol.io) server. Multiple agent sessions query the same knowledge base — on a single machine, or across a team via a central server.
-- **Memory that behaves like memory.** Relevance decays over time. Frequently accessed knowledge stays fresh. Unused knowledge fades. Important insights never fully disappear.
+The MCP server is stateless and reads from a shared SQLite database. Multiple agent sessions can query the same knowledge base on a single machine, or point at a central server for shared memory across a team.
 
 ## How it works
 
@@ -67,8 +60,6 @@ lore staged             # conversations awaiting digestion
     │              SQLite · WAL mode · Local embeddings           │
     └────────────────────────────────────────────────────────────┘
 ```
-
-The MCP server is stateless — it reads from the same SQLite database the daemon writes to. This means you can run multiple MCP server instances (one per agent session) against the same knowledge base, or point them at a shared database on a central server.
 
 ## Install
 
