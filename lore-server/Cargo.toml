@@ -1,0 +1,15 @@
+[package]
+name = "lore-server"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP server for lore memory system"
+
+[dependencies]
+lore-mcp = { path = "../lore-mcp" }
+lore-db = { path = "../lore-db" }
+rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
+axum = "0.7"
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }

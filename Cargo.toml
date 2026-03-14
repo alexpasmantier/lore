@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "lore-db",
     "lore-mcp",
+    "lore-server",
     "lore-daemon",
     "lore-tray",
 ]
