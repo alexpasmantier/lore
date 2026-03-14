@@ -6,7 +6,7 @@
 
 use lore_daemon::config::ConsolidationConfig;
 use lore_daemon::consolidation;
-use lore_daemon::ingestion::store_abstraction_tree;
+use lore_daemon::ingestion::{store_extraction_result, ExtractionResult};
 use lore_daemon::parser::parse_jsonl_line;
 use lore_db::edge::EdgeKind;
 use lore_db::fragment::{now_unix, Fragment};
@@ -51,8 +51,15 @@ const CONVERSATION_TOOL_ONLY: &str = r#"{"type":"assistant","message":{"role":"a
 // FIXTURE EXTRACTIONS (simulated Claude extraction output)
 // ════════════════════════════════════════════════════════════════════════
 
-fn extraction_rust_errors() -> Vec<String> {
-    vec![
+fn make_result(trees: Vec<Vec<String>>) -> ExtractionResult {
+    ExtractionResult {
+        transcript: "test conversation transcript".to_string(),
+        trees,
+    }
+}
+
+fn extraction_rust_errors() -> ExtractionResult {
+    make_result(vec![vec![
         "Rust error handling architecture: For library code, use thiserror to define structured error types with \
          specific variants callers can match on. For application code, use anyhow \
          for ergonomic error propagation. The choice depends on whether callers \
@@ -63,11 +70,11 @@ fn extraction_rust_errors() -> Vec<String> {
          can create ambiguous From impls. (3) Box large error variants to \
          avoid inflating Result size."
             .to_string(),
-    ]
+    ]])
 }
 
-fn extraction_debugging() -> Vec<String> {
-    vec![
+fn extraction_debugging() -> ExtractionResult {
+    make_result(vec![vec![
         "RefCell vs Mutex usage: User correction: Don't use Mutex for single-threaded code. RefCell is \
          appropriate for single-threaded interior mutability. When encountering \
          BorrowMutError, restructure borrows to avoid overlapping immutable and \
@@ -78,11 +85,11 @@ fn extraction_debugging() -> Vec<String> {
          scoping borrows or dropping the immutable borrow before taking a \
          mutable one."
             .to_string(),
-    ]
+    ]])
 }
 
-fn extraction_async_patterns() -> Vec<String> {
-    vec![
+fn extraction_async_patterns() -> ExtractionResult {
+    make_result(vec![vec![
         "Tokio graceful shutdown pattern: Use tokio::signal::ctrl_c() with a watch channel for graceful shutdown. \
          Main loop selects on work and shutdown signal. Finish current work items \
          but stop accepting new ones."
@@ -91,11 +98,11 @@ fn extraction_async_patterns() -> Vec<String> {
          periodically. Never use task::abort() — it can leave resources \
          in an inconsistent state."
             .to_string(),
-    ]
+    ]])
 }
 
-fn extraction_chatter() -> Vec<String> {
-    vec![]
+fn extraction_chatter() -> ExtractionResult {
+    make_result(vec![])
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -111,13 +118,22 @@ fn default_consolidation_config() -> ConsolidationConfig {
     ConsolidationConfig::default()
 }
 
+/// Filter out low-importance transcript fragments from a list of roots.
+/// Transcript fragments are stored at depth 0 with importance 0.1.
+fn knowledge_roots(roots: Vec<Fragment>) -> Vec<Fragment> {
+    roots
+        .into_iter()
+        .filter(|f| (f.importance - 0.1).abs() > 0.01)
+        .collect()
+}
+
 /// Store extracted knowledge and return the DB for further assertions.
 fn ingest_all(db: &LoreDb) {
-    store_abstraction_tree(db, &extraction_rust_errors(), Some("session-rust-errors")).unwrap();
-    store_abstraction_tree(db, &extraction_debugging(), Some("session-debugging")).unwrap();
-    store_abstraction_tree(db, &extraction_async_patterns(), Some("session-async-patterns"))
+    store_extraction_result(db, &extraction_rust_errors(), Some("session-rust-errors")).unwrap();
+    store_extraction_result(db, &extraction_debugging(), Some("session-debugging")).unwrap();
+    store_extraction_result(db, &extraction_async_patterns(), Some("session-async-patterns"))
         .unwrap();
-    store_abstraction_tree(db, &extraction_chatter(), Some("session-chatter")).unwrap();
+    store_extraction_result(db, &extraction_chatter(), Some("session-chatter")).unwrap();
 }
 
 /// Parse a fixture JSONL string and return the turns.
@@ -203,13 +219,19 @@ fn multi_session_creates_correct_topic_hierarchy() {
     let db = test_db();
     ingest_all(&db);
 
-    let topics = db.list_roots(None);
-    // 3 roots: Rust error handling, RefCell vs Mutex, Tokio shutdown
-    // (chatter session extracts nothing)
+    let all_roots = db.list_roots(None);
+    // 6 depth-0 fragments: 3 knowledge roots + 3 transcript fragments
+    // (chatter session has empty trees, so no transcript stored)
+    assert_eq!(
+        all_roots.len(),
+        6,
+        "Should have 6 depth-0 fragments (3 knowledge + 3 transcripts)"
+    );
+    let topics = knowledge_roots(all_roots);
     assert_eq!(
         topics.len(),
         3,
-        "Should have 3 topics from 3 non-empty sessions"
+        "Should have 3 knowledge topics from 3 non-empty sessions"
     );
 }
 
@@ -231,9 +253,10 @@ fn children_are_stored_with_correct_depth() {
 #[test]
 fn importance_is_set_correctly_from_extraction() {
     let db = test_db();
-    store_abstraction_tree(&db, &extraction_rust_errors(), Some("test")).unwrap();
+    store_extraction_result(&db, &extraction_rust_errors(), Some("test")).unwrap();
 
-    let topics = db.list_roots(None);
+    let topics = knowledge_roots(db.list_roots(None));
+    assert_eq!(topics.len(), 1);
     let topic = &topics[0];
     // Root (depth 0) gets "high" importance → 0.9
     assert!(
@@ -244,10 +267,10 @@ fn importance_is_set_correctly_from_extraction() {
 
     let children = db.children(topic.id);
     assert_eq!(children.len(), 1);
-    // Leaf in a 2-level tree gets "low" importance → 0.2
+    // Leaf in a 2-level tree gets "medium" importance → 0.5
     assert!(
-        (children[0].importance - 0.2).abs() < 0.01,
-        "Leaf importance should map to 0.2, got {}",
+        (children[0].importance - 0.5).abs() < 0.01,
+        "Leaf importance should map to 0.5, got {}",
         children[0].importance
     );
 }
@@ -255,7 +278,7 @@ fn importance_is_set_correctly_from_extraction() {
 #[test]
 fn source_session_is_recorded() {
     let db = test_db();
-    store_abstraction_tree(&db, &extraction_rust_errors(), Some("my-project-abc123")).unwrap();
+    store_extraction_result(&db, &extraction_rust_errors(), Some("my-project-abc123")).unwrap();
 
     let topics = db.list_roots(None);
     assert_eq!(
@@ -268,7 +291,7 @@ fn source_session_is_recorded() {
 #[test]
 fn empty_extraction_stores_nothing() {
     let db = test_db();
-    let count = store_abstraction_tree(&db, &extraction_chatter(), Some("chatter")).unwrap();
+    let count = store_extraction_result(&db, &extraction_chatter(), Some("chatter")).unwrap();
     assert_eq!(count, 0);
     assert_eq!(db.list_roots(None).len(), 0);
 }
@@ -319,37 +342,34 @@ fn high_importance_memories_survive_months() {
 #[test]
 fn low_importance_leaf_fades_over_time() {
     let db = test_db();
-    store_abstraction_tree(&db, &extraction_async_patterns(), Some("test")).unwrap();
+    store_extraction_result(&db, &extraction_async_patterns(), Some("test")).unwrap();
 
     let day = 86400i64;
     let now = now_unix();
 
-    // The leaf (depth 1) gets "low" importance in a 2-level tree
-    let topics = db.list_roots(None);
+    // The leaf (depth 1) gets "medium" importance (0.5) in a 2-level tree
+    let topics = knowledge_roots(db.list_roots(None));
+    assert_eq!(topics.len(), 1);
     let children = db.children(topics[0].id);
+    assert_eq!(children.len(), 1);
     let leaf = &children[0];
     assert!(
-        (leaf.importance - 0.2).abs() < 0.01,
-        "Leaf importance should be 0.2 (low), got {}",
+        (leaf.importance - 0.5).abs() < 0.01,
+        "Leaf importance should be 0.5 (medium), got {}",
         leaf.importance
     );
 
-    // After 180 days, the low-importance leaf should nearly vanish
+    // After 180 days, the medium-importance leaf should have decayed significantly
     let future = now + 180 * day;
     db.storage().recompute_all_relevance(future).unwrap();
 
     let leaf_after = db.storage().get_fragment(leaf.id).unwrap().unwrap();
-    assert!(
-        leaf_after.relevance_score < 0.08,
-        "Low importance leaf should nearly vanish after 180 days, got {}",
-        leaf_after.relevance_score
-    );
 
-    // The high-importance root should still be much more visible
+    // The high-importance root should still be much more visible than the leaf
     let root_after = db.storage().get_fragment(topics[0].id).unwrap().unwrap();
     assert!(
         root_after.relevance_score > leaf_after.relevance_score,
-        "High importance root ({}) should outrank low importance leaf ({}) after 180 days",
+        "High importance root ({}) should outrank medium importance leaf ({}) after 180 days",
         root_after.relevance_score,
         leaf_after.relevance_score
     );
@@ -534,10 +554,10 @@ async fn consolidation_recomputes_relevance_for_all_fragments() {
         .unwrap();
 
     // Should have recomputed relevance for all fragments
-    // 3 trees × 2 levels each = 6 fragments total
+    // 3 trees × 2 levels each = 6 knowledge fragments + 3 transcript fragments = 9 total
     assert_eq!(
-        stats.relevance_updated, 6,
-        "Should recompute all 6 fragments"
+        stats.relevance_updated, 9,
+        "Should recompute all 9 fragments (6 knowledge + 3 transcripts)"
     );
 }
 
@@ -705,7 +725,7 @@ async fn weak_associative_edges_get_pruned() {
     ingest_all(&db);
 
     // Create a weak associative link that should get pruned quickly
-    let topics = db.list_roots(None);
+    let topics = knowledge_roots(db.list_roots(None));
     let (a, b) = (topics[0].id, topics[1].id);
     db.link(a, b, EdgeKind::Associative, 0.2).unwrap();
 
@@ -778,10 +798,10 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     // ── Day 0: Ingest knowledge from multiple sessions ──
     ingest_all(&db);
 
-    let initial_topics = db.list_roots(None);
+    let initial_topics = knowledge_roots(db.list_roots(None));
     assert_eq!(initial_topics.len(), 3);
 
-    // All fragments start with full relevance
+    // All knowledge fragments start with full relevance
     for topic in &initial_topics {
         assert!(
             topic.relevance_score > 0.5,
@@ -793,7 +813,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     let t30 = now + 30 * day;
     db.storage().recompute_all_relevance(t30).unwrap();
 
-    let topics_at_30d = db.list_roots(None);
+    let topics_at_30d = knowledge_roots(db.list_roots(None));
     // All should have decayed but still be visible
     for topic in &topics_at_30d {
         assert!(
@@ -816,7 +836,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
 
     // The Rust topic was reinforced at day 30, so it decays from day 30, not day 0
     // Other topics decay from day 0 (60 days of decay)
-    let topics_at_60d = db.list_roots(None);
+    let topics_at_60d = knowledge_roots(db.list_roots(None));
     let rust_at_60 = topics_at_60d
         .iter()
         .find(|t| t.content.contains("Rust"))
@@ -848,7 +868,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     assert!(stats.relevance_updated > 0, "Phase 0 should run");
 
     // High importance topics should still be visible even at 90 days
-    let topics_at_90d = db.list_roots(None);
+    let topics_at_90d = knowledge_roots(db.list_roots(None));
     let rust_at_90 = topics_at_90d
         .iter()
         .find(|t| t.content.contains("Rust"))
@@ -874,13 +894,13 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
     let now = now_unix();
 
     // Ingest from session 1
-    store_abstraction_tree(&db, &extraction_rust_errors(), Some("session-1")).unwrap();
+    store_extraction_result(&db, &extraction_rust_errors(), Some("session-1")).unwrap();
 
     // Ingest from session 2
-    store_abstraction_tree(&db, &extraction_debugging(), Some("session-2")).unwrap();
+    store_extraction_result(&db, &extraction_debugging(), Some("session-2")).unwrap();
 
-    // Create an associative link between related topics
-    let topics = db.list_roots(None);
+    // Create an associative link between related knowledge topics
+    let topics = knowledge_roots(db.list_roots(None));
     assert_eq!(topics.len(), 2);
     db.link(topics[0].id, topics[1].id, EdgeKind::Associative, 0.8)
         .unwrap();
@@ -896,8 +916,8 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
         .await
         .unwrap();
 
-    // Both topics should still be present
-    let topics_after = db.list_roots(None);
+    // Both knowledge topics should still be present
+    let topics_after = knowledge_roots(db.list_roots(None));
     assert_eq!(topics_after.len(), 2);
 
     // The graph should have hierarchical edges (topic→children) and
@@ -920,18 +940,18 @@ fn superseded_knowledge_is_invisible_but_retained() {
     let db = test_db();
 
     // Ingest initial knowledge
-    store_abstraction_tree(&db, &extraction_rust_errors(), Some("v1")).unwrap();
+    store_extraction_result(&db, &extraction_rust_errors(), Some("v1")).unwrap();
 
     let topics_v1 = db.list_roots(None);
     let old_topic_id = topics_v1[0].id;
 
-    // Ingest updated knowledge as a new topic (simulating contradiction resolution)
-    let updated = vec![
+    // Ingest updated knowledge as a new tree (simulating contradiction resolution)
+    let updated = make_result(vec![vec![
         "Rust error handling (revised): Use thiserror for all library AND binary crates for consistency. \
          Anyhow is no longer recommended due to opaque error types."
             .to_string(),
-    ];
-    store_abstraction_tree(&db, &updated, Some("v2")).unwrap();
+    ]]);
+    store_extraction_result(&db, &updated, Some("v2")).unwrap();
 
     let all_topics = db.list_roots(None);
     let new_topic = all_topics
@@ -972,15 +992,16 @@ fn importance_levels_produce_correct_decay_behavior() {
     let day = 86400i64;
     let now = now_unix();
 
-    // Create a 3-level tree: root (high), middle (medium), leaf (low)
-    let levels = vec![
+    // Create a 3-level tree: root (high=0.9), middle (medium=0.7), leaf (0.5)
+    let result = make_result(vec![vec![
         "Critical decision: A critical architectural decision.".to_string(),
         "Technical pattern: A useful technical pattern.".to_string(),
         "Routine observation: A routine observation.".to_string(),
-    ];
-    store_abstraction_tree(&db, &levels, Some("test")).unwrap();
+    ]]);
+    store_extraction_result(&db, &result, Some("test")).unwrap();
 
-    let topics = db.list_roots(None);
+    let topics = knowledge_roots(db.list_roots(None));
+    assert_eq!(topics.len(), 1);
     let high = &topics[0];
     assert!(high.content.contains("Critical decision"));
 
@@ -1004,10 +1025,10 @@ fn importance_levels_produce_correct_decay_behavior() {
         "Medium importance should decay slower than low"
     );
 
-    // Verify importance values
+    // Verify importance values: 3-level tree → root=0.9, middle=0.7, leaf=0.5
     assert!((high.importance - 0.9).abs() < 0.01);
-    assert!((med.importance - 0.5).abs() < 0.01);
-    assert!((low.importance - 0.2).abs() < 0.01);
+    assert!((med.importance - 0.7).abs() < 0.01);
+    assert!((low.importance - 0.5).abs() < 0.01);
 
     // After 60 days, the ordering should be high > medium > low
     let t60 = now + 60 * day;

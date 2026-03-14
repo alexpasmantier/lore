@@ -145,12 +145,16 @@ async fn phase0_digest_staged(
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
-        match ingestion::extract_abstraction_tree(client, &turns, Some(&session_ctx)).await {
-            Ok(levels) => {
-                match ingestion::store_abstraction_tree(db, &levels, session_id.as_deref()) {
+        match ingestion::extract_knowledge_trees(client, &turns, Some(&session_ctx)).await {
+            Ok(result) => {
+                match ingestion::store_extraction_result(db, &result, session_id.as_deref()) {
                     Ok(count) => {
                         total_fragments += count;
-                        tracing::info!("Stored {} fragments ({} levels)", count, levels.len());
+                        tracing::info!(
+                            "Stored {} fragments ({} trees)",
+                            count,
+                            result.trees.len()
+                        );
                     }
                     Err(e) => tracing::error!("Storage failed (continuing): {}", e),
                 }
