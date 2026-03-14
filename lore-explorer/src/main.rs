@@ -10,6 +10,7 @@ const TOP_N: usize = 10;
 // ──── Background thread messages ────
 
 struct SearchRequest {
+    /// Empty query = list all roots. Non-empty = semantic search.
     query: String,
     /// Empty = search roots globally. Non-empty = search children of these parents.
     parent_ids: Vec<FragmentId>,
@@ -55,18 +56,34 @@ impl ExplorerApp {
 
             while let Ok(req) = query_rx.recv() {
                 let results = if req.parent_ids.is_empty() {
-                    // Global search on roots
-                    let scored = db.query(&req.query, 0, TOP_N);
-                    scored
-                        .iter()
-                        .map(|sf| ResultEntry {
-                            id: sf.fragment.id,
-                            content: sf.fragment.content.clone(),
-                            depth: sf.fragment.depth,
-                            score: sf.score,
-                            children_count: db.children(sf.fragment.id).len(),
-                        })
-                        .collect()
+                    if req.query.is_empty() {
+                        // List all roots (initial load)
+                        let roots = db.list_roots(None);
+                        roots
+                            .iter()
+                            .take(TOP_N)
+                            .map(|f| ResultEntry {
+                                id: f.id,
+                                content: f.content.clone(),
+                                depth: f.depth,
+                                score: f.relevance_score,
+                                children_count: db.children(f.id).len(),
+                            })
+                            .collect()
+                    } else {
+                        // Semantic search on roots
+                        let scored = db.query(&req.query, 0, TOP_N);
+                        scored
+                            .iter()
+                            .map(|sf| ResultEntry {
+                                id: sf.fragment.id,
+                                content: sf.fragment.content.clone(),
+                                depth: sf.fragment.depth,
+                                score: sf.score,
+                                children_count: db.children(sf.fragment.id).len(),
+                            })
+                            .collect()
+                    }
                 } else {
                     // Search children of the given parents
                     let query_embedding = db.embed_text(&req.query);
@@ -125,11 +142,17 @@ impl ExplorerApp {
             }
         });
 
+        // Load roots on startup
+        let _ = query_tx.send(SearchRequest {
+            query: String::new(),
+            parent_ids: vec![],
+        });
+
         Self {
             query: String::new(),
             results: Vec::new(),
             depth_level: 0,
-            searching: false,
+            searching: true,
             expanded: None,
             tx: query_tx,
             rx: result_rx,
@@ -152,6 +175,7 @@ impl ExplorerApp {
             parent_ids,
         });
         self.searching = true;
+        self.depth_level += 1;
     }
 }
 
@@ -161,9 +185,6 @@ impl eframe::App for ExplorerApp {
         if let Ok(results) = self.rx.try_recv() {
             self.results = results;
             self.searching = false;
-            if self.depth_level > 0 || !self.results.is_empty() {
-                self.depth_level += 1;
-            }
             self.expanded = None;
         }
 
