@@ -11,6 +11,9 @@ pub struct Config {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub claude: ClaudeConfig,
+    /// Remote server config. When set, the daemon syncs staged turns
+    /// to the server instead of running consolidation locally.
+    pub remote: Option<RemoteConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +59,21 @@ pub struct DatabaseConfig {
 pub struct ClaudeConfig {
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteConfig {
+    /// Server URL (e.g. "http://lore.example.com:8080")
+    pub url: String,
+    /// Client identifier (defaults to hostname at runtime)
+    pub client_id: Option<String>,
+    /// Sync interval in seconds (default: 60)
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval_secs: u64,
+}
+
+fn default_sync_interval() -> u64 {
+    60
 }
 
 fn default_poll_interval() -> u64 {
@@ -148,6 +166,7 @@ impl Default for Config {
             consolidation: ConsolidationConfig::default(),
             database: DatabaseConfig::default(),
             claude: ClaudeConfig::default(),
+            remote: None,
         }
     }
 }

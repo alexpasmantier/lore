@@ -197,14 +197,6 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
 
     status::write_status(DaemonState::Idle);
 
-    tracing::info!("Lore daemon started (PID: {})", pid);
-    tracing::info!("Database: {}", config.db_path().display());
-    tracing::info!(
-        "Poll interval: {}s, Consolidation interval: {}s",
-        config.ingestion.poll_interval_secs,
-        config.consolidation.interval_secs
-    );
-
     // Open database
     let db_path = config.db_path();
     if let Some(parent) = db_path.parent() {
@@ -212,36 +204,59 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
     }
     let storage = Storage::open(&db_path)?;
     let db = LoreDb::new(storage);
+    let watcher = FileWatcher::new();
 
-    // Create Claude client (API key if available, otherwise `claude -p` fallback)
+    // Handle shutdown gracefully
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    shutdown_signal_handler(shutdown_tx);
+
+    if let Some(ref remote) = config.remote {
+        // Remote mode: ingest + sync (no local consolidation)
+        run_remote_loop(&db, &watcher, remote, &mut shutdown_rx).await?;
+    } else {
+        // Local mode: ingest + consolidate
+        run_local_loop(&db, &watcher, &config, &mut shutdown_rx).await?;
+    }
+
+    // Cleanup PID and status files
+    let _ = std::fs::remove_file(&pid_path);
+    status::clear_status();
+    tracing::info!("Daemon stopped.");
+    Ok(())
+}
+
+async fn run_local_loop(
+    db: &LoreDb,
+    watcher: &FileWatcher,
+    config: &Config,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = ClaudeClient::auto(
         &config.claude.api_key_env,
         config.ingestion.claude_model.clone(),
     );
 
-    let watcher = FileWatcher::new();
-
-    // Run ingestion and consolidation loops concurrently
     let ingestion_interval = Duration::from_secs(config.ingestion.poll_interval_secs);
     let consolidation_interval = Duration::from_secs(config.consolidation.interval_secs);
     let consolidation_config = config.consolidation.clone();
 
-    // Handle shutdown gracefully
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-
-    shutdown_signal_handler(shutdown_tx);
-
     let mut ingestion_timer = tokio::time::interval(ingestion_interval);
     let mut consolidation_timer = tokio::time::interval(consolidation_interval);
+    consolidation_timer.tick().await; // skip first immediate tick
 
-    // Skip the first immediate tick for consolidation (let ingestion run first)
-    consolidation_timer.tick().await;
+    tracing::info!("Lore daemon started (local mode)");
+    tracing::info!("Database: {}", config.db_path().display());
+    tracing::info!(
+        "Poll interval: {}s, Consolidation interval: {}s",
+        config.ingestion.poll_interval_secs,
+        config.consolidation.interval_secs
+    );
 
     loop {
         tokio::select! {
             _ = ingestion_timer.tick() => {
                 status::write_status(DaemonState::Ingesting);
-                if let Err(e) = run_ingestion_pass(&db, &watcher) {
+                if let Err(e) = run_ingestion_pass(db, watcher) {
                     tracing::error!("Ingestion error: {}", e);
                 }
                 status::write_status(DaemonState::Idle);
@@ -249,7 +264,7 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
             _ = consolidation_timer.tick() => {
                 status::write_status(DaemonState::Consolidating);
                 if let Err(e) = consolidation::run_consolidation(
-                    &db,
+                    db,
                     Some(&client),
                     &consolidation_config,
                 ).await {
@@ -263,11 +278,104 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
             }
         }
     }
+    Ok(())
+}
 
-    // Cleanup PID and status files
-    let _ = std::fs::remove_file(&pid_path);
-    status::clear_status();
-    tracing::info!("Daemon stopped.");
+async fn run_remote_loop(
+    db: &LoreDb,
+    watcher: &FileWatcher,
+    remote: &lore_daemon::config::RemoteConfig,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ingestion_interval = Duration::from_secs(30);
+    let sync_interval = Duration::from_secs(remote.sync_interval_secs);
+
+    let client_id = remote
+        .client_id
+        .clone()
+        .or_else(|| hostname::get().ok().and_then(|h| h.into_string().ok()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let push_url = format!("{}/push", remote.url.trim_end_matches('/'));
+
+    let mut ingestion_timer = tokio::time::interval(ingestion_interval);
+    let mut sync_timer = tokio::time::interval(sync_interval);
+    sync_timer.tick().await; // skip first immediate tick
+
+    tracing::info!("Lore daemon started (remote mode)");
+    tracing::info!("Server: {}", remote.url);
+    tracing::info!(
+        "Client ID: {}, Sync interval: {}s",
+        client_id,
+        remote.sync_interval_secs
+    );
+
+    let http = reqwest::Client::new();
+
+    loop {
+        tokio::select! {
+            _ = ingestion_timer.tick() => {
+                status::write_status(DaemonState::Ingesting);
+                if let Err(e) = run_ingestion_pass(db, watcher) {
+                    tracing::error!("Ingestion error: {}", e);
+                }
+                status::write_status(DaemonState::Idle);
+            }
+            _ = sync_timer.tick() => {
+                if let Err(e) = run_sync(db, &http, &push_url, &client_id).await {
+                    tracing::error!("Sync error: {}", e);
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                // Final sync before shutdown
+                let _ = run_sync(db, &http, &push_url, &client_id).await;
+                tracing::info!("Shutting down...");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_sync(
+    db: &LoreDb,
+    http: &reqwest::Client,
+    push_url: &str,
+    client_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let now = lore_db::fragment::now_unix();
+    let sessions = db.storage().get_staged_sessions(0, now + 1)?;
+    if sessions.is_empty() {
+        return Ok(());
+    }
+
+    let mut push_turns = Vec::new();
+    for session in &sessions {
+        let turns = db.storage().get_staged_turns(&session.file_path)?;
+        for turn in &turns {
+            push_turns.push(serde_json::json!({
+                "session": session.file_path,
+                "role": turn.role,
+                "text": turn.text,
+            }));
+        }
+    }
+
+    let total = push_turns.len();
+    let body = serde_json::json!({
+        "client_id": client_id,
+        "turns": push_turns,
+    });
+
+    let resp = http.post(push_url).json(&body).send().await?;
+    if resp.status().is_success() {
+        for session in &sessions {
+            db.storage().delete_staged_turns(&session.file_path)?;
+        }
+        tracing::info!("Synced {} turns ({} sessions)", total, sessions.len());
+    } else {
+        tracing::error!("Sync failed: {} {}", resp.status(), resp.text().await?);
+    }
+
     Ok(())
 }
 
