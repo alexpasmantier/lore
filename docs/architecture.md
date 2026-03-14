@@ -23,7 +23,7 @@
 - **lore-db** — Core library. Stores knowledge as interconnected abstraction trees in SQLite with local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx), 384-dim via `fastembed`).
 - **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the knowledge base to any connected agent.
 - **lore-daemon** — CLI and background daemon. Produces the `lore` binary. Stages conversation turns, digests them during consolidation, and provides interactive query commands.
-- **lore-tray** — Desktop app (HAL 9000 style tray icon). Auto-starts and stops the daemon. Packaged as macOS `.app` or Linux `.desktop`.
+- **lore-tray** — Desktop app (system tray icon). Auto-starts and stops the daemon. Packaged as macOS `.app` or Linux `.desktop`.
 - **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
 ## Knowledge model

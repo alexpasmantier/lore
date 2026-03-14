@@ -2,7 +2,7 @@
 name = "lore-tray"
 version = "0.1.0"
 edition = "2021"
-description = "HAL 9000-style system tray icon for the lore daemon"
+description = "System tray icon for the lore daemon"
 
 # Linux build requires system libraries:
 #   Debian/Ubuntu: sudo apt install libgtk-3-dev libayatana-appindicator3-dev

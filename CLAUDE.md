@@ -13,7 +13,7 @@
 - **lore-db**: Core library. Stores knowledge as interconnected abstraction trees in SQLite with fastembed embeddings (all-MiniLM-L6-v2, 384-dim). Exports `lore_home()` for cross-platform `~/.lore/` path resolution.
 - **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 6 tools: `search`, `read`, `list_roots`, `store`, `update`, `delete`. Iterative search→read workflow — search returns IDs/scores only, read returns content + structural IDs.
 - **lore-daemon**: CLI + background daemon (binary name: `lore`). Two-phase pipeline: ingestion stages raw conversation turns into SQLite (fast, no API calls); consolidation digests idle sessions with full conversation context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Session metadata (cwd, git branch) extracted from JSONL and passed to extraction prompt.
-- **lore-tray**: Desktop app (HAL 9000 style tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
+- **lore-tray**: Desktop app (system tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
 
 ## Installed State
