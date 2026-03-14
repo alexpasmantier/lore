@@ -6,6 +6,7 @@ members = [
     "lore-server",
     "lore-daemon",
     "lore-tray",
+    "lore-explorer",
 ]
 
 [workspace.dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "lore-explorer"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop knowledge browser for lore"
+
+[dependencies]
+lore-db = { path = "../lore-db" }
+eframe = "0.33"
+dirs = { workspace = true }
