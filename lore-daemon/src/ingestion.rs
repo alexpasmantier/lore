@@ -3,6 +3,9 @@ use lore_db::{EdgeKind, Fragment, FragmentId, LoreDb};
 use crate::claude_client::ClaudeClient;
 use crate::parser::{format_conversation_batch, ConversationTurn};
 
+/// Topics shorter than this are stored as single-level roots (no compression).
+const MIN_COMPRESS_LENGTH: usize = 450;
+
 /// Minimum length for the root (most abstract) fragment.
 const MIN_ROOT_LENGTH: usize = 150;
 
@@ -31,26 +34,21 @@ fn session_context_prefix(session: Option<&SessionContext>) -> String {
 
 /// A relationship between two topics from the same conversation.
 pub struct TopicRelationship {
-    /// Index of the first topic in the `trees` vec.
     pub topic_a: usize,
-    /// Index of the second topic in the `trees` vec.
     pub topic_b: usize,
-    /// How the two topics relate.
     pub description: String,
 }
 
 /// Result of extracting knowledge from a conversation.
 pub struct ExtractionResult {
-    /// The raw conversation transcript (stored as a standalone fragment).
     pub transcript: String,
-    /// Independent knowledge trees, each a vec of levels from root (shortest) to leaf (longest).
     pub trees: Vec<Vec<String>>,
-    /// Relationships between topics from the same conversation.
     pub relationships: Vec<TopicRelationship>,
 }
 
-/// Extract knowledge from a conversation: extract insights, split into topics,
-/// then recursively summarize each topic into an abstraction tree.
+/// Extract knowledge from a conversation in a single Claude call:
+/// extract insights, split into topics, and identify relationships.
+/// Then optionally compress long topics into abstraction trees.
 pub async fn extract_knowledge_trees(
     client: &ClaudeClient,
     turns: &[ConversationTurn],
@@ -66,21 +64,28 @@ pub async fn extract_knowledge_trees(
         });
     }
 
-    // Step 1: Extract knowledge worth remembering
+    // Single combined call: extract + split + relationships
     let ctx = session_context_prefix(session);
-    let extract_prompt = format!(
-        "{ctx}Extract the knowledge worth remembering from this conversation. \
+    let prompt = format!(
+        "{ctx}Extract the knowledge worth remembering from this conversation, \
+         grouped into distinct, independent topics. Each topic should be self-contained \
+         and cover one coherent subject area.\n\n\
          Focus on: architectural decisions and rationale, non-obvious technical insights, \
-         debugging breakthroughs, user preferences and corrections, project conventions. \
-         Skip: routine code changes, standard API usage, greetings, tool call noise. \
-         Write a document of the key insights, each as a self-contained paragraph. \
-         Respond with ONLY the extracted knowledge, no preamble.\n\n{transcript}"
+         debugging breakthroughs, user preferences and corrections, project conventions.\n\
+         Skip: routine code changes, standard API usage, greetings, tool call noise.\n\n\
+         Output format:\n\
+         Output each topic separated by a line containing only '---'.\n\
+         Then, after a line containing only '===RELATIONSHIPS===', output one line per \
+         pair of related topics in the format: TOPIC_NUMBER<>TOPIC_NUMBER<>how they relate\n\
+         (topic numbers are 1-based)\n\n\
+         If nothing worth remembering, output only: EMPTY\n\n\
+         Respond with ONLY the output, no preamble.\n\n{transcript}"
     );
 
-    let extracted = client.complete(&extract_prompt).await?;
-    let extracted = extracted.trim().to_string();
+    let response = client.complete(&prompt).await?;
+    let response = response.trim();
 
-    if extracted.is_empty() {
+    if response.is_empty() || response == "EMPTY" {
         tracing::info!("No extractable knowledge found");
         return Ok(ExtractionResult {
             transcript,
@@ -89,45 +94,15 @@ pub async fn extract_knowledge_trees(
         });
     }
 
-    tracing::info!(
-        "Extracted {} chars of knowledge from {} char conversation",
-        extracted.len(),
-        transcript.len()
-    );
-
-    // Step 2: Split into distinct topics and identify relationships
-    let split_prompt = format!(
-        "{ctx}The following is extracted knowledge from a conversation. \
-         Split it into distinct, independent topics. Each topic should be self-contained \
-         and cover one coherent subject area.\n\n\
-         Output format:\n\
-         First, output each topic separated by a line containing only '---'.\n\
-         Then, after a line containing only '===RELATIONSHIPS===', output one line per \
-         pair of related topics in the format: TOPIC_NUMBER<>TOPIC_NUMBER<>how they relate\n\
-         (topic numbers are 1-based)\n\n\
-         Example:\n\
-         First topic content here.\n\
-         ---\n\
-         Second topic content here.\n\
-         ---\n\
-         Third topic content here.\n\
-         ===RELATIONSHIPS===\n\
-         1<>2<>The first topic's architecture decision influenced the second topic's implementation.\n\
-         1<>3<>Both address error handling but at different abstraction levels.\n\n\
-         Respond with ONLY the output, no preamble.\n\n{extracted}"
-    );
-
-    let split_response = client.complete(&split_prompt).await?;
-
     // Parse topics and relationships
     let (topics_section, relationships_section) =
-        if let Some(idx) = split_response.find("===RELATIONSHIPS===") {
+        if let Some(idx) = response.find("===RELATIONSHIPS===") {
             (
-                &split_response[..idx],
-                Some(split_response[idx + "===RELATIONSHIPS===".len()..].trim()),
+                &response[..idx],
+                Some(response[idx + "===RELATIONSHIPS===".len()..].trim()),
             )
         } else {
-            (split_response.as_str(), None)
+            (response, None)
         };
 
     let topics: Vec<String> = topics_section
@@ -141,7 +116,10 @@ pub async fn extract_knowledge_trees(
         for line in rel_text.lines() {
             let parts: Vec<&str> = line.splitn(3, "<>").collect();
             if parts.len() == 3 {
-                if let (Ok(a), Ok(b)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                if let (Ok(a), Ok(b)) = (
+                    parts[0].trim().parse::<usize>(),
+                    parts[1].trim().parse::<usize>(),
+                ) {
                     if a >= 1 && b >= 1 && a <= topics.len() && b <= topics.len() {
                         relationships.push(TopicRelationship {
                             topic_a: a - 1,
@@ -155,18 +133,24 @@ pub async fn extract_knowledge_trees(
     }
 
     tracing::info!(
-        "Split into {} topics with {} relationships",
+        "Extracted {} topics with {} relationships from {} char conversation",
         topics.len(),
-        relationships.len()
+        relationships.len(),
+        transcript.len()
     );
 
-    // Step 3: Recursively summarize each topic into an abstraction tree
+    // Compress long topics into abstraction trees, store short ones as-is
     let mut trees = Vec::new();
 
     for topic in &topics {
-        let tree = compress_to_tree(client, topic, session).await?;
-        if !tree.is_empty() {
-            trees.push(tree);
+        if topic.len() >= MIN_COMPRESS_LENGTH {
+            let tree = compress_to_tree(client, topic, session).await?;
+            if !tree.is_empty() {
+                trees.push(tree);
+            }
+        } else {
+            // Short topic — store as single-level root
+            trees.push(vec![topic.clone()]);
         }
     }
 
@@ -225,10 +209,6 @@ async fn compress_to_tree(
 }
 
 /// Store the extraction result in the database. Returns the number of fragments stored.
-///
-/// Stores the raw transcript as a standalone fragment, then each knowledge tree
-/// as a chain of fragments from root to leaf, linked to the transcript via
-/// associative edges.
 pub fn store_extraction_result(
     db: &LoreDb,
     result: &ExtractionResult,
@@ -359,9 +339,7 @@ mod tests {
         // 1 transcript + 2 (tree 1) + 1 (tree 2) = 4
         assert_eq!(count, 4);
 
-        // Two roots at depth 0 (the knowledge roots) + one transcript at depth 0
         let roots = db.list_roots(None);
-        // transcript + 2 tree roots = 3 depth-0 fragments
         assert_eq!(roots.len(), 3);
     }
 }

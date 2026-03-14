@@ -113,8 +113,9 @@ async fn phase0_digest_staged(
         return Ok((0, 0));
     }
 
-    let mut total_sessions = 0;
-    let mut total_fragments = 0;
+    // Prepare all sessions for parallel extraction
+    let mut tasks: Vec<(String, Vec<ConversationTurn>, ingestion::SessionContext, String)> =
+        Vec::new();
 
     for session in sessions.iter().take(MAX_SESSIONS_PER_CONSOLIDATION) {
         let staged_turns = db.storage().get_staged_turns(&session.file_path)?;
@@ -130,30 +131,50 @@ async fn phase0_digest_staged(
             })
             .collect();
 
-        tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
-
-        // Read session metadata from the JSONL file
         let meta = parser::read_session_metadata(&session.file_path);
         let session_ctx = ingestion::SessionContext {
             cwd: meta.cwd,
             git_branch: meta.git_branch,
         };
 
-        // Derive session ID from file path
         let session_id = std::path::Path::new(&session.file_path)
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
+            .unwrap_or("unknown")
+            .to_string();
 
-        match ingestion::extract_knowledge_trees(client, &turns, Some(&session_ctx)).await {
-            Ok(result) => {
-                match ingestion::store_extraction_result(db, &result, session_id.as_deref()) {
+        tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
+        tasks.push((session.file_path.clone(), turns, session_ctx, session_id));
+    }
+
+    // Extract knowledge from all sessions concurrently
+    use futures::stream::{self, StreamExt};
+    const EXTRACTION_CONCURRENCY: usize = 4;
+
+    let results: Vec<_> = stream::iter(tasks.iter().map(|(file_path, turns, ctx, session_id)| {
+        async move {
+            let result = ingestion::extract_knowledge_trees(client, turns, Some(ctx)).await;
+            (file_path.as_str(), session_id.as_str(), result)
+        }
+    }))
+    .buffer_unordered(EXTRACTION_CONCURRENCY)
+    .collect()
+    .await;
+
+    // Store results sequentially (DB writes are fast)
+    let mut total_sessions = 0;
+    let mut total_fragments = 0;
+
+    for (file_path, session_id, result) in &results {
+        match result {
+            Ok(extraction) => {
+                match ingestion::store_extraction_result(db, extraction, Some(session_id)) {
                     Ok(count) => {
                         total_fragments += count;
                         tracing::info!(
                             "Stored {} fragments ({} trees)",
                             count,
-                            result.trees.len()
+                            extraction.trees.len()
                         );
                     }
                     Err(e) => tracing::error!("Storage failed (continuing): {}", e),
@@ -162,7 +183,7 @@ async fn phase0_digest_staged(
             Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
         }
 
-        db.storage().delete_staged_turns(&session.file_path)?;
+        db.storage().delete_staged_turns(file_path)?;
         total_sessions += 1;
     }
 
