@@ -68,5 +68,7 @@ pub struct Edge {
     pub target: FragmentId,
     pub kind: EdgeKind,
     pub weight: f32,
+    /// Relationship description (e.g. how two associated concepts relate).
+    pub content: Option<String>,
     pub created_at: i64,
 }

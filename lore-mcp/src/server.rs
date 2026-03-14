@@ -94,7 +94,14 @@ struct ReadResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_id: Option<String>,
     children: Vec<String>,
-    associations: Vec<String>,
+    associations: Vec<AssociationResponse>,
+}
+
+#[derive(Serialize)]
+struct AssociationResponse {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relationship: Option<String>,
 }
 
 // ──── MCP Server ────
@@ -253,10 +260,17 @@ impl MemoryServer {
             let parent_id = db.parent(id).map(|p| p.id.to_string());
             let children: Vec<String> =
                 db.children(id).iter().map(|c| c.id.to_string()).collect();
-            let associations: Vec<String> = db
-                .associations(id)
+            let assoc_edges = db.storage().get_edges_for(id).unwrap_or_default();
+            let associations: Vec<AssociationResponse> = assoc_edges
                 .iter()
-                .map(|a| a.id.to_string())
+                .filter(|e| e.kind == lore_db::EdgeKind::Associative)
+                .map(|e| {
+                    let other_id = if e.source == id { e.target } else { e.source };
+                    AssociationResponse {
+                        id: other_id.to_string(),
+                        relationship: e.content.clone(),
+                    }
+                })
                 .collect();
 
             let response = ReadResponse {
@@ -420,6 +434,7 @@ mod tests {
             target: child.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         db.storage().insert_edge(&edge).unwrap();
@@ -436,6 +451,7 @@ mod tests {
             target: leaf.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         db.storage().insert_edge(&edge2).unwrap();

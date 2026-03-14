@@ -66,6 +66,7 @@ impl Storage {
                 target TEXT NOT NULL REFERENCES fragments(id),
                 kind TEXT NOT NULL,
                 weight REAL DEFAULT 1.0,
+                content TEXT,
                 created_at INTEGER NOT NULL
             );
 
@@ -357,14 +358,15 @@ impl Storage {
     /// Insert an edge between two fragments.
     pub fn insert_edge(&self, edge: &Edge) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO edges (id, source, target, kind, weight, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO edges (id, source, target, kind, weight, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 edge.id.to_string(),
                 edge.source.as_str(),
                 edge.target.as_str(),
                 edge.kind.as_str(),
                 edge.weight,
+                edge.content,
                 edge.created_at,
             ],
         )?;
@@ -423,7 +425,7 @@ impl Storage {
     /// Get all edges from or to a fragment.
     pub fn get_edges_for(&self, id: FragmentId) -> rusqlite::Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source, target, kind, weight, created_at
+            "SELECT id, source, target, kind, weight, content, created_at
              FROM edges WHERE source = ?1 OR target = ?1",
         )?;
 
@@ -684,7 +686,8 @@ fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         })?,
         kind: EdgeKind::parse(&kind_str).unwrap_or(EdgeKind::Associative),
         weight: row.get(4)?,
-        created_at: row.get(5)?,
+        content: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }
 
@@ -748,6 +751,7 @@ mod tests {
             target: child.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         storage.insert_edge(&edge).unwrap();
@@ -803,6 +807,7 @@ mod tests {
             target: child.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         storage.insert_edge(&edge).unwrap();

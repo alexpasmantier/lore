@@ -55,6 +55,7 @@ fn make_result(trees: Vec<Vec<String>>) -> ExtractionResult {
     ExtractionResult {
         transcript: "test conversation transcript".to_string(),
         trees,
+        relationships: vec![],
     }
 }
 

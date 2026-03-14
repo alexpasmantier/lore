@@ -183,6 +183,7 @@ impl LoreDb {
                 target: id,
                 kind: EdgeKind::Hierarchical,
                 weight: 1.0,
+                content: None,
                 created_at: now_unix(),
             };
             self.storage.insert_edge(&edge)?;
@@ -211,12 +212,25 @@ impl LoreDb {
         kind: EdgeKind,
         weight: f32,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.link_with_content(source, target, kind, weight, None)
+    }
+
+    /// Create an edge with a relationship description.
+    pub fn link_with_content(
+        &self,
+        source: FragmentId,
+        target: FragmentId,
+        kind: EdgeKind,
+        weight: f32,
+        content: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let edge = Edge {
             id: EdgeId::new(),
             source,
             target,
             kind,
             weight,
+            content,
             created_at: now_unix(),
         };
         self.storage.insert_edge(&edge)?;
@@ -401,6 +415,7 @@ mod tests {
             target: concept.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         db.storage().insert_edge(&edge).unwrap();
@@ -415,6 +430,7 @@ mod tests {
             target: fact.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now_unix(),
         };
         db.storage().insert_edge(&edge2).unwrap();

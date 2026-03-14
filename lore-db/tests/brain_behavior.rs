@@ -55,6 +55,7 @@ fn insert_fragment(
             target: frag.id,
             kind: EdgeKind::Hierarchical,
             weight: 1.0,
+            content: None,
             created_at: now,
         };
         db.storage().insert_edge(&edge).unwrap();

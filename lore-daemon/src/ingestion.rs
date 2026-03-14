@@ -29,12 +29,24 @@ fn session_context_prefix(session: Option<&SessionContext>) -> String {
     prefix
 }
 
+/// A relationship between two topics from the same conversation.
+pub struct TopicRelationship {
+    /// Index of the first topic in the `trees` vec.
+    pub topic_a: usize,
+    /// Index of the second topic in the `trees` vec.
+    pub topic_b: usize,
+    /// How the two topics relate.
+    pub description: String,
+}
+
 /// Result of extracting knowledge from a conversation.
 pub struct ExtractionResult {
     /// The raw conversation transcript (stored as a standalone fragment).
     pub transcript: String,
     /// Independent knowledge trees, each a vec of levels from root (shortest) to leaf (longest).
     pub trees: Vec<Vec<String>>,
+    /// Relationships between topics from the same conversation.
+    pub relationships: Vec<TopicRelationship>,
 }
 
 /// Extract knowledge from a conversation: extract insights, split into topics,
@@ -50,6 +62,7 @@ pub async fn extract_knowledge_trees(
         return Ok(ExtractionResult {
             transcript,
             trees: Vec::new(),
+            relationships: Vec::new(),
         });
     }
 
@@ -72,6 +85,7 @@ pub async fn extract_knowledge_trees(
         return Ok(ExtractionResult {
             transcript,
             trees: Vec::new(),
+            relationships: Vec::new(),
         });
     }
 
@@ -81,23 +95,70 @@ pub async fn extract_knowledge_trees(
         transcript.len()
     );
 
-    // Step 2: Split into distinct topics
+    // Step 2: Split into distinct topics and identify relationships
     let split_prompt = format!(
         "{ctx}The following is extracted knowledge from a conversation. \
          Split it into distinct, independent topics. Each topic should be self-contained \
-         and cover one coherent subject area. \
-         Output each topic separated by a line containing only '---'. \
-         Respond with ONLY the topics, no preamble or numbering.\n\n{extracted}"
+         and cover one coherent subject area.\n\n\
+         Output format:\n\
+         First, output each topic separated by a line containing only '---'.\n\
+         Then, after a line containing only '===RELATIONSHIPS===', output one line per \
+         pair of related topics in the format: TOPIC_NUMBER<>TOPIC_NUMBER<>how they relate\n\
+         (topic numbers are 1-based)\n\n\
+         Example:\n\
+         First topic content here.\n\
+         ---\n\
+         Second topic content here.\n\
+         ---\n\
+         Third topic content here.\n\
+         ===RELATIONSHIPS===\n\
+         1<>2<>The first topic's architecture decision influenced the second topic's implementation.\n\
+         1<>3<>Both address error handling but at different abstraction levels.\n\n\
+         Respond with ONLY the output, no preamble.\n\n{extracted}"
     );
 
     let split_response = client.complete(&split_prompt).await?;
-    let topics: Vec<String> = split_response
+
+    // Parse topics and relationships
+    let (topics_section, relationships_section) =
+        if let Some(idx) = split_response.find("===RELATIONSHIPS===") {
+            (
+                &split_response[..idx],
+                Some(split_response[idx + "===RELATIONSHIPS===".len()..].trim()),
+            )
+        } else {
+            (split_response.as_str(), None)
+        };
+
+    let topics: Vec<String> = topics_section
         .split("\n---\n")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
-    tracing::info!("Split into {} topics", topics.len());
+    let mut relationships = Vec::new();
+    if let Some(rel_text) = relationships_section {
+        for line in rel_text.lines() {
+            let parts: Vec<&str> = line.splitn(3, "<>").collect();
+            if parts.len() == 3 {
+                if let (Ok(a), Ok(b)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                    if a >= 1 && b >= 1 && a <= topics.len() && b <= topics.len() {
+                        relationships.push(TopicRelationship {
+                            topic_a: a - 1,
+                            topic_b: b - 1,
+                            description: parts[2].trim().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        "Split into {} topics with {} relationships",
+        topics.len(),
+        relationships.len()
+    );
 
     // Step 3: Recursively summarize each topic into an abstraction tree
     let mut trees = Vec::new();
@@ -109,7 +170,11 @@ pub async fn extract_knowledge_trees(
         }
     }
 
-    Ok(ExtractionResult { transcript, trees })
+    Ok(ExtractionResult {
+        transcript,
+        trees,
+        relationships,
+    })
 }
 
 /// Recursively compress a text into an abstraction tree.
@@ -179,7 +244,9 @@ pub fn store_extraction_result(
     let transcript_id = db.insert(transcript_frag, None)?;
     let mut count = 1;
 
-    // Store each knowledge tree
+    // Store each knowledge tree, tracking root IDs for relationship edges
+    let mut tree_root_ids: Vec<FragmentId> = Vec::new();
+
     for tree_levels in &result.trees {
         if tree_levels.is_empty() {
             continue;
@@ -187,12 +254,12 @@ pub fn store_extraction_result(
 
         let total = tree_levels.len();
         let mut parent_id: Option<FragmentId> = None;
+        let mut root_id = None;
         let mut leaf_id = None;
 
         for (i, content) in tree_levels.iter().enumerate() {
             let depth = i as u32;
 
-            // Root = high importance, leaf = medium, single-level = high
             let importance = if i == 0 {
                 0.9
             } else if i == total - 1 {
@@ -205,9 +272,16 @@ pub fn store_extraction_result(
             frag.source_session = source_session.map(String::from);
             let frag_id = db.insert(frag, parent_id)?;
 
+            if i == 0 {
+                root_id = Some(frag_id);
+            }
             parent_id = Some(frag_id);
             leaf_id = Some(frag_id);
             count += 1;
+        }
+
+        if let Some(rid) = root_id {
+            tree_root_ids.push(rid);
         }
 
         // Link the leaf of this tree to the transcript
@@ -216,10 +290,24 @@ pub fn store_extraction_result(
         }
     }
 
+    // Create relationship edges between topic roots
+    for rel in &result.relationships {
+        if rel.topic_a < tree_root_ids.len() && rel.topic_b < tree_root_ids.len() {
+            let _ = db.link_with_content(
+                tree_root_ids[rel.topic_a],
+                tree_root_ids[rel.topic_b],
+                EdgeKind::Associative,
+                1.0,
+                Some(rel.description.clone()),
+            );
+        }
+    }
+
     tracing::info!(
-        "Stored {} fragments ({} trees + transcript)",
+        "Stored {} fragments ({} trees, {} relationships + transcript)",
         count,
-        result.trees.len()
+        result.trees.len(),
+        result.relationships.len()
     );
     Ok(count)
 }
@@ -249,6 +337,7 @@ mod tests {
         let result = ExtractionResult {
             transcript: "hello".to_string(),
             trees: vec![],
+            relationships: vec![],
         };
         let count = store_extraction_result(&db, &result, None).unwrap();
         assert_eq!(count, 0);
@@ -264,6 +353,7 @@ mod tests {
                 vec!["broad concept".to_string(), "detailed knowledge".to_string()],
                 vec!["another concept".to_string()],
             ],
+            relationships: vec![],
         };
         let count = store_extraction_result(&db, &result, Some("session-1")).unwrap();
         // 1 transcript + 2 (tree 1) + 1 (tree 2) = 4
