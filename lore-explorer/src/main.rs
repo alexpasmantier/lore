@@ -30,7 +30,7 @@ struct ResultEntry {
 struct ExplorerApp {
     query: String,
     results: Vec<ResultEntry>,
-    depth_level: usize,
+    breadcrumbs: Vec<String>,
     searching: bool,
     expanded: Option<FragmentId>,
 
@@ -151,7 +151,7 @@ impl ExplorerApp {
         Self {
             query: String::new(),
             results: Vec::new(),
-            depth_level: 0,
+            breadcrumbs: Vec::new(),
             searching: true,
             expanded: None,
             tx: query_tx,
@@ -164,7 +164,7 @@ impl ExplorerApp {
             return;
         }
 
-        let parent_ids = if self.depth_level == 0 {
+        let parent_ids = if self.breadcrumbs.is_empty() {
             vec![]
         } else {
             self.results.iter().take(TOP_N).map(|r| r.id).collect()
@@ -174,8 +174,9 @@ impl ExplorerApp {
             query: self.query.clone(),
             parent_ids,
         });
+        self.breadcrumbs.push(self.query.clone());
+        self.query.clear();
         self.searching = true;
-        self.depth_level += 1;
     }
 }
 
@@ -215,35 +216,64 @@ impl eframe::App for ExplorerApp {
                 }
             });
 
-            // ── Breadcrumb ──
-            if self.depth_level > 0 {
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(false, "⟵ Roots")
-                        .clicked()
-                    {
-                        self.depth_level = 0;
-                        self.results.clear();
+            // ── Breadcrumb + depth ──
+            ui.horizontal(|ui| {
+                if !self.breadcrumbs.is_empty() {
+                    if ui.selectable_label(false, "Roots").clicked() {
+                        self.breadcrumbs.clear();
                         self.expanded = None;
+                        // Reload roots
+                        let _ = self.tx.send(SearchRequest {
+                            query: String::new(),
+                            parent_ids: vec![],
+                        });
+                        self.searching = true;
                     }
-                    for i in 1..self.depth_level {
+                    for (i, crumb) in self.breadcrumbs.clone().iter().enumerate() {
                         ui.label("›");
-                        ui.label(format!("Level {}", i));
+                        if i < self.breadcrumbs.len() - 1 {
+                            // Clickable — truncate breadcrumbs to this level
+                            if ui.selectable_label(false, crumb).clicked() {
+                                self.breadcrumbs.truncate(i + 1);
+                                // Re-run search from roots through breadcrumbs
+                                // For simplicity, reset to roots and let user re-search
+                                self.breadcrumbs.clear();
+                                self.expanded = None;
+                                let _ = self.tx.send(SearchRequest {
+                                    query: String::new(),
+                                    parent_ids: vec![],
+                                });
+                                self.searching = true;
+                            }
+                        } else {
+                            ui.strong(crumb);
+                        }
                     }
-                    if self.searching {
-                        ui.spinner();
-                    }
-                });
-                ui.separator();
-            } else if self.searching {
-                ui.horizontal(|ui| {
+                }
+                if !self.results.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let depth = if self.results.is_empty() {
+                            0
+                        } else {
+                            self.results[0].depth
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("depth {}", depth))
+                                .small()
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                }
+                if self.searching {
                     ui.spinner();
-                    ui.label("Searching...");
-                });
+                }
+            });
+            if !self.breadcrumbs.is_empty() {
+                ui.separator();
             }
 
             // ── Results ──
-            if self.results.is_empty() && !self.searching && self.depth_level > 0 {
+            if self.results.is_empty() && !self.searching && !self.breadcrumbs.is_empty() {
                 ui.label("No results found.");
             }
 
