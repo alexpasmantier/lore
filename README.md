@@ -4,6 +4,8 @@ Centralized long-term memory for AI agents.
 
 Lore extracts knowledge from past agent sessions and stores it in a database that reshapes itself over time. Multiple agents can share the same knowledge base locally, or across machines through a central server.
 
+This can be used to give your agents institutional knowledge — architectural decisions, debugging insights, project conventions, user preferences — without repeating yourself.
+
 ## Install
 
 ### macOS
