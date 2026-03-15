@@ -59,24 +59,31 @@ pub async fn run_consolidation(
         stats.roots_resummarized = phase3_resummarization(db, client).await?;
         tracing::info!("Phase 4: Re-summarized {} roots", stats.roots_resummarized);
 
-        // Phase 5: Contradiction resolution
+        // Phase 5: Reflection — synthesize higher-order insights from dense clusters
+        stats.reflections_generated = phase_reflection(db, client).await?;
+        tracing::info!(
+            "Phase 5: Generated {} reflections",
+            stats.reflections_generated
+        );
+
+        // Phase 6: Contradiction resolution
         stats.contradictions_resolved = phase4_contradiction_resolution(db, client).await?;
         tracing::info!(
-            "Phase 5: Resolved {} contradictions",
+            "Phase 6: Resolved {} contradictions",
             stats.contradictions_resolved
         );
     } else {
-        tracing::info!("Phase 4-5: Skipped (no API key)");
+        tracing::info!("Phase 4-6: Skipped (no API key)");
     }
 
-    // Phase 6: Edge pruning (with decay)
+    // Phase 7: Edge pruning (with decay)
     stats.edges_pruned = phase5_pruning(db, config)?;
-    tracing::info!("Phase 6: Pruned {} weak edges", stats.edges_pruned);
+    tracing::info!("Phase 7: Pruned {} weak edges", stats.edges_pruned);
 
-    // Phase 7: Fragment pruning by relevance — true forgetting
+    // Phase 8: Fragment pruning by relevance — true forgetting
     stats.fragments_pruned = phase6_fragment_pruning(db, config, now)?;
     tracing::info!(
-        "Phase 7: Pruned {} low-relevance fragments",
+        "Phase 8: Pruned {} low-relevance fragments",
         stats.fragments_pruned
     );
 
@@ -92,6 +99,7 @@ pub struct ConsolidationStats {
     pub roots_merged: usize,
     pub links_created: usize,
     pub roots_resummarized: usize,
+    pub reflections_generated: usize,
     pub contradictions_resolved: usize,
     pub edges_pruned: usize,
     pub fragments_pruned: usize,
@@ -400,7 +408,150 @@ async fn phase3_resummarization(
     Ok(resummarized)
 }
 
-/// Phase 4: Detect contradictions between sibling fragments within the same parent.
+/// Minimum associative connections for a root to be considered part of a dense cluster.
+const MIN_CLUSTER_CONNECTIONS: usize = 3;
+
+/// Maximum number of source fragments to include in a reflection prompt.
+const MAX_REFLECTION_SOURCES: usize = 6;
+
+/// Phase 5: Generate reflection fragments from dense knowledge clusters.
+/// Identifies roots with high mutual associative density and synthesizes
+/// higher-order insights not present in any individual fragment.
+/// Based on Park et al.'s Generative Agents reflection mechanism.
+async fn phase_reflection(
+    db: &LoreDb,
+    client: &ClaudeClient,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let roots = db.list_roots(None);
+    if roots.len() < MIN_CLUSTER_CONNECTIONS {
+        return Ok(0);
+    }
+
+    let root_ids: std::collections::HashSet<FragmentId> = roots.iter().map(|r| r.id).collect();
+
+    // Find roots with dense associative connections to other roots
+    let mut best_cluster: Option<(FragmentId, Vec<FragmentId>)> = None;
+
+    for root in &roots {
+        // Skip existing reflections
+        if root.metadata.get("type").map(|t| t.as_str()) == Some("reflection") {
+            continue;
+        }
+
+        let edges = db.storage().get_edges_for(root.id).unwrap_or_default();
+        let connected_roots: Vec<FragmentId> = edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Associative)
+            .filter_map(|e| {
+                let neighbor = if e.source == root.id {
+                    e.target
+                } else {
+                    e.source
+                };
+                if root_ids.contains(&neighbor) {
+                    Some(neighbor)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if connected_roots.len() >= MIN_CLUSTER_CONNECTIONS {
+            // Check if this root already has a reflection (derived_from edge)
+            let has_reflection = edges
+                .iter()
+                .any(|e| e.content.as_deref() == Some("derived_from"));
+            if has_reflection {
+                continue;
+            }
+
+            if best_cluster.is_none()
+                || connected_roots.len() > best_cluster.as_ref().unwrap().1.len()
+            {
+                best_cluster = Some((root.id, connected_roots));
+            }
+        }
+    }
+
+    let (center_id, connected) = match best_cluster {
+        Some(c) => c,
+        None => return Ok(0),
+    };
+
+    // Gather content from the cluster
+    let mut source_ids = vec![center_id];
+    let mut cluster_contents = Vec::new();
+    if let Ok(Some(center)) = db.storage().get_fragment(center_id) {
+        cluster_contents.push(center.content);
+    }
+    for &id in connected.iter().take(MAX_REFLECTION_SOURCES - 1) {
+        if let Ok(Some(frag)) = db.storage().get_fragment(id) {
+            cluster_contents.push(frag.content);
+            source_ids.push(id);
+        }
+    }
+
+    if cluster_contents.len() < MIN_CLUSTER_CONNECTIONS {
+        return Ok(0);
+    }
+
+    // Ask Claude for a synthesis
+    let contents_str = cluster_contents
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{}. {}", i + 1, c))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let prompt = format!(
+        "These {} knowledge fragments are closely related:\n\n{}\n\n\
+         Synthesize a single higher-order insight that emerges from the pattern across \
+         these fragments — something not stated in any individual fragment but apparent \
+         when viewing them together. Focus on systemic patterns, recurring themes, or \
+         emergent principles.\n\n\
+         Write 2-4 sentences. Respond with ONLY the insight, no preamble.",
+        cluster_contents.len(),
+        contents_str
+    );
+
+    let reflection = match client.complete(&prompt).await {
+        Ok(text) => text.trim().to_string(),
+        Err(e) => {
+            tracing::warn!("Failed to generate reflection: {}", e);
+            return Ok(0);
+        }
+    };
+
+    if reflection.is_empty() {
+        return Ok(0);
+    }
+
+    // Store as high-importance root with derived_from edges
+    let mut frag = Fragment::new_with_importance(reflection, 0, 0.9);
+    frag.metadata
+        .insert("type".to_string(), "reflection".to_string());
+    let reflection_id = db.insert(frag, None)?;
+
+    // Link to all source fragments
+    for (i, &id) in source_ids.iter().enumerate() {
+        let weight = if i == 0 { 1.0 } else { 0.8 };
+        let _ = db.link_with_content(
+            id,
+            reflection_id,
+            EdgeKind::Associative,
+            weight,
+            Some("derived_from".to_string()),
+        );
+    }
+
+    tracing::info!(
+        "Generated reflection from {} source fragments",
+        source_ids.len()
+    );
+    Ok(1)
+}
+
+/// Phase 6: Detect contradictions between sibling fragments within the same parent.
 /// Collects all candidate pairs first, then batch-checks them to minimize API calls.
 async fn phase4_contradiction_resolution(
     db: &LoreDb,
