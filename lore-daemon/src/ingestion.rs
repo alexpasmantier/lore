@@ -218,8 +218,16 @@ pub fn store_extraction_result(
         return Ok(0);
     }
 
-    // Store raw transcript as a standalone low-importance fragment
-    let mut transcript_frag = Fragment::new_with_importance(result.transcript.clone(), 0, 0.1);
+    // Store raw transcript at max depth — it's the rawest, most detailed content
+    let transcript_depth = result
+        .trees
+        .iter()
+        .map(|t| t.len() as u32)
+        .max()
+        .unwrap_or(1)
+        + 1;
+    let mut transcript_frag =
+        Fragment::new_with_importance(result.transcript.clone(), transcript_depth, 0.1);
     transcript_frag.source_session = source_session.map(String::from);
     let transcript_id = db.insert(transcript_frag, None)?;
     let mut count = 1;
@@ -339,7 +347,8 @@ mod tests {
         // 1 transcript + 2 (tree 1) + 1 (tree 2) = 4
         assert_eq!(count, 4);
 
+        // Two knowledge roots at depth 0 (transcript is at max depth, not 0)
         let roots = db.list_roots(None);
-        assert_eq!(roots.len(), 3);
+        assert_eq!(roots.len(), 2);
     }
 }

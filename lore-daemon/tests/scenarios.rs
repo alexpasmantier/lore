@@ -220,19 +220,12 @@ fn multi_session_creates_correct_topic_hierarchy() {
     let db = test_db();
     ingest_all(&db);
 
+    // 3 knowledge roots at depth 0 (transcripts are at max depth, not 0)
     let all_roots = db.list_roots(None);
-    // 6 depth-0 fragments: 3 knowledge roots + 3 transcript fragments
-    // (chatter session has empty trees, so no transcript stored)
     assert_eq!(
         all_roots.len(),
-        6,
-        "Should have 6 depth-0 fragments (3 knowledge + 3 transcripts)"
-    );
-    let topics = knowledge_roots(all_roots);
-    assert_eq!(
-        topics.len(),
         3,
-        "Should have 3 knowledge topics from 3 non-empty sessions"
+        "Should have 3 depth-0 knowledge roots from 3 non-empty sessions"
     );
 }
 
