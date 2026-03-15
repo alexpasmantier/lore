@@ -19,6 +19,10 @@ pub struct SearchParams {
     /// Max results to return
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Enable deep search: Personalized PageRank across associative edges
+    /// to discover non-obvious connections beyond direct semantic matches
+    #[serde(default)]
+    pub deep: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -201,15 +205,12 @@ impl MemoryServer {
                     .into_iter()
                     .filter(|f| !f.embedding.is_empty())
                     .map(|f| {
-                        let sim =
-                            lore_db::cosine_similarity(&query_embedding, &f.embedding);
+                        let sim = lore_db::cosine_similarity(&query_embedding, &f.embedding);
                         let score = 0.7 * sim + 0.3 * f.relevance_score;
                         (f, score)
                     })
                     .collect();
-                scored.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 scored.truncate(params.limit);
 
                 scored
@@ -222,8 +223,12 @@ impl MemoryServer {
                     })
                     .collect::<Vec<_>>()
             } else {
-                // Global search
-                let scored = db.query(&params.query, params.limit);
+                // Global search (optionally with PPR deep traversal)
+                let scored = if params.deep {
+                    db.search_deep(&params.query, params.limit)
+                } else {
+                    db.query(&params.query, params.limit)
+                };
                 scored
                     .iter()
                     .map(|sf| SearchHit {
@@ -264,8 +269,7 @@ impl MemoryServer {
             db.reinforce_on_access(id);
 
             let parent_id = db.parent(id).map(|p| p.id.to_string());
-            let children: Vec<String> =
-                db.children(id).iter().map(|c| c.id.to_string()).collect();
+            let children: Vec<String> = db.children(id).iter().map(|c| c.id.to_string()).collect();
             let assoc_edges = db.storage().get_edges_for(id).unwrap_or_default();
             let associations: Vec<AssociationResponse> = assoc_edges
                 .iter()
@@ -367,13 +371,11 @@ impl MemoryServer {
         };
 
         self.with_db(|db| match db.prune(id) {
-            Ok(()) => {
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "deleted",
-                    "id": params.fragment_id,
-                }))
-                .unwrap()
-            }
+            Ok(()) => serde_json::to_string_pretty(&serde_json::json!({
+                "status": "deleted",
+                "id": params.fragment_id,
+            }))
+            .unwrap(),
             Err(e) => format!("Failed to delete: {}", e),
         })
     }
@@ -387,13 +389,11 @@ impl MemoryServer {
         };
 
         self.with_db(|db| match db.update(id, &params.content) {
-            Ok(()) => {
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "updated",
-                    "id": params.fragment_id,
-                }))
-                .unwrap()
-            }
+            Ok(()) => serde_json::to_string_pretty(&serde_json::json!({
+                "status": "updated",
+                "id": params.fragment_id,
+            }))
+            .unwrap(),
             Err(e) => format!("Failed to update: {}", e),
         })
     }
@@ -490,6 +490,7 @@ mod tests {
                 query: "Rust".to_string(),
                 parent_id: None,
                 limit: 10,
+                deep: false,
             }))
             .await;
         assert!(result.contains("score"));
@@ -514,6 +515,7 @@ mod tests {
                 query: "Async".to_string(),
                 parent_id: Some(root_id),
                 limit: 10,
+                deep: false,
             }))
             .await;
         assert!(result.contains("score"));
@@ -561,9 +563,7 @@ mod tests {
             (roots[0].id.to_string(), children[0].id.to_string())
         };
 
-        let result = server
-            .read(Parameters(ReadParams { id: child_id }))
-            .await;
+        let result = server.read(Parameters(ReadParams { id: child_id })).await;
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         // Has parent

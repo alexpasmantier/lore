@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::edge::{Edge, EdgeId, EdgeKind};
 use crate::embedding::{cosine_similarity, Embedder};
 use crate::fragment::{now_unix, Fragment, FragmentId, ScoredFragment, Tree};
@@ -73,7 +75,7 @@ impl LoreDb {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Dedup by tree: keep only the best-scoring fragment per root
-        let mut seen_roots = std::collections::HashSet::new();
+        let mut seen_roots = HashSet::new();
         let mut deduped = Vec::new();
 
         for (frag, score) in scored {
@@ -128,6 +130,130 @@ impl LoreDb {
             .into_iter()
             .filter_map(|sf| self.subtree(sf.fragment.id, max_depth))
             .collect()
+    }
+
+    /// Deep search: semantic search + Personalized PageRank across associative edges.
+    /// Discovers non-obvious connections that plain semantic search misses.
+    /// Based on HippoRAG (Gutiérrez et al., NeurIPS 2024).
+    pub fn search_deep(&self, topic: &str, limit: usize) -> Vec<ScoredFragment> {
+        let seeds = self.query(topic, limit);
+        if seeds.is_empty() {
+            return seeds;
+        }
+
+        let ppr_scores = self.personalized_pagerank(&seeds);
+
+        // Collect seed IDs and their root IDs to avoid returning same-tree results
+        let seed_ids: HashSet<FragmentId> = seeds.iter().map(|s| s.fragment.id).collect();
+        let seed_root_ids: HashSet<FragmentId> = seeds
+            .iter()
+            .map(|s| self.find_root(s.fragment.id))
+            .collect();
+
+        // Sort PPR results by score
+        let mut ppr_sorted: Vec<_> = ppr_scores.into_iter().collect();
+        ppr_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Collect PPR-discovered fragments from different trees
+        let mut additional: Vec<ScoredFragment> = Vec::new();
+        let mut seen_roots = seed_root_ids.clone();
+
+        for (frag_id, ppr_score) in ppr_sorted {
+            if seed_ids.contains(&frag_id) {
+                continue;
+            }
+            if let Ok(Some(frag)) = self.storage.get_fragment(frag_id) {
+                if frag.superseded_by.is_some() || frag.relevance_score < MIN_RELEVANCE_THRESHOLD {
+                    continue;
+                }
+
+                let root_id = self.find_root(frag_id);
+                if seen_roots.contains(&root_id) {
+                    continue;
+                }
+                seen_roots.insert(root_id);
+
+                let breadcrumb = self.build_breadcrumb(frag_id);
+                additional.push(ScoredFragment {
+                    fragment: frag,
+                    score: ppr_score,
+                    breadcrumb,
+                });
+
+                if additional.len() + seeds.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        // Reinforce PPR-discovered fragments
+        for sf in &additional {
+            self.reinforce_on_access(sf.fragment.id);
+        }
+
+        let mut combined = seeds;
+        combined.extend(additional);
+        combined
+    }
+
+    /// Run Personalized PageRank from seed fragments across associative edges.
+    /// Returns a map of fragment IDs to their PPR scores.
+    fn personalized_pagerank(&self, seeds: &[ScoredFragment]) -> HashMap<FragmentId, f32> {
+        const ALPHA: f32 = 0.3; // teleport probability
+        const ITERATIONS: usize = 3;
+
+        let total_score: f32 = seeds.iter().map(|s| s.score).sum();
+        if total_score == 0.0 {
+            return HashMap::new();
+        }
+
+        let personalization: HashMap<FragmentId, f32> = seeds
+            .iter()
+            .map(|s| (s.fragment.id, s.score / total_score))
+            .collect();
+
+        let mut scores = personalization.clone();
+
+        for _ in 0..ITERATIONS {
+            let mut new_scores: HashMap<FragmentId, f32> = HashMap::new();
+
+            // Teleport to seeds
+            for (&id, &weight) in &personalization {
+                *new_scores.entry(id).or_default() += ALPHA * weight;
+            }
+
+            // Propagate through associative edges
+            for (&frag_id, &score) in &scores {
+                if let Ok(edges) = self.storage.get_edges_for(frag_id) {
+                    let neighbors: Vec<_> = edges
+                        .iter()
+                        .filter(|e| e.kind == EdgeKind::Associative)
+                        .collect();
+
+                    if neighbors.is_empty() {
+                        // Dead end: redistribute to seeds (dangling node handling)
+                        for (&id, &weight) in &personalization {
+                            *new_scores.entry(id).or_default() += (1.0 - ALPHA) * score * weight;
+                        }
+                    } else {
+                        let total_weight: f32 = neighbors.iter().map(|e| e.weight).sum();
+                        for edge in &neighbors {
+                            let neighbor = if edge.source == frag_id {
+                                edge.target
+                            } else {
+                                edge.source
+                            };
+                            *new_scores.entry(neighbor).or_default() +=
+                                (1.0 - ALPHA) * score * (edge.weight / total_weight);
+                        }
+                    }
+                }
+            }
+
+            scores = new_scores;
+        }
+
+        scores
     }
 
     /// Pure semantic search across all fragments, blended with relevance.
@@ -462,7 +588,7 @@ impl LoreDb {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Dedup by tree
-        let mut seen_roots = std::collections::HashSet::new();
+        let mut seen_roots = HashSet::new();
         let mut deduped = Vec::new();
 
         for (frag, score) in scored {
@@ -638,6 +764,34 @@ mod tests {
         let db = make_test_db();
         // Without embedder, should return None
         assert!(db.max_root_similarity("rust programming").is_none());
+    }
+
+    #[test]
+    fn test_search_deep_includes_associative_neighbors() {
+        let db = make_test_db();
+
+        // Create a second tree not directly connected
+        let mut topic2 = Fragment::new("Python programming language".to_string(), 0);
+        topic2.embedding = vec![0.9; 384]; // very different from Rust root [0.1; 384]
+        db.storage().insert_fragment(&topic2).unwrap();
+
+        // Create associative link between the two roots
+        db.link(
+            db.list_roots(None)[0].id,
+            topic2.id,
+            EdgeKind::Associative,
+            0.8,
+        )
+        .unwrap();
+
+        // Deep search for "rust" should find the Rust root via text fallback,
+        // then PPR should discover the Python root via the associative edge
+        let results = db.search_deep("rust", 10);
+        assert!(
+            results.len() >= 2,
+            "Deep search should find associated fragments, got {}",
+            results.len()
+        );
     }
 
     #[test]
