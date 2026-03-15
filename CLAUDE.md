@@ -2,7 +2,7 @@
 
 ## Build & Test
 - Build all: `cargo build`
-- Test all: `cargo test` (105 tests across 3 crates)
+- Test all: `cargo test` (113 tests across workspace)
 - Test single crate: `cargo test -p lore-db`
 - Run MCP server: `cargo run -p lore-mcp`
 - Run CLI/daemon: `cargo run -p lore-daemon -- <command>` (binary is `lore`)
@@ -14,10 +14,12 @@
 - **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 6 tools: `search`, `read`, `list_roots`, `store`, `update`, `delete`. Iterative search→read workflow — search returns IDs/scores only, read returns content + structural IDs.
 - **lore-daemon**: CLI + background daemon (binary name: `lore`). Two-phase pipeline: ingestion stages raw conversation turns into SQLite (fast, no API calls); consolidation digests idle sessions with full conversation context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Session metadata (cwd, git branch) extracted from JSONL and passed to extraction prompt.
 - **lore-tray**: Desktop app (system tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
+- **lore-server**: HTTP server for centralized deployments. MCP over SSE (`/mcp`), push endpoint (`/push`), status (`/status`). Reuses `MemoryServer` from lore-mcp via Axum + rmcp streamable HTTP transport.
+- **lore-explorer**: Desktop knowledge browser (egui). Interactive search→refine→drill workflow with breadcrumb navigation.
 - **lore-plugin**: Claude Code plugin (static files, not a Rust crate). Contains `.mcp.json`, SKILL.md, and /recall + /remember commands.
 
 ## Installed State
-- Binaries: `~/.local/bin/lore` (CLI + daemon), `~/.local/bin/lore-mcp`, `~/.local/bin/lore-tray`
+- Binaries: `~/.local/bin/lore` (CLI + daemon), `~/.local/bin/lore-mcp`, `~/.local/bin/lore-tray`, `~/.local/bin/lore-server`, `~/.local/bin/lore-explorer`
 - MCP server registered in `~/.claude/.mcp.json` (user-level, all sessions)
 - Config at `~/.lore/config.toml`
 - Database at `~/.lore/memory.db`

@@ -24,6 +24,8 @@
 - **lore-mcp** — MCP server over stdio (`rmcp`). Exposes the knowledge base to any connected agent.
 - **lore-daemon** — CLI and background daemon. Produces the `lore` binary. Stages conversation turns, digests them during consolidation, and provides interactive query commands.
 - **lore-tray** — Desktop app (system tray icon). Auto-starts and stops the daemon. Packaged as macOS `.app` or Linux `.desktop`.
+- **lore-server** — HTTP server for centralized deployments. MCP over SSE, push endpoint for remote clients, status endpoint.
+- **lore-explorer** — Desktop knowledge browser (egui). Interactive search→refine→drill workflow.
 - **lore-plugin** — Claude Code plugin. `/recall` and `/remember` slash commands.
 
 ## Knowledge model

@@ -78,7 +78,6 @@ The Lore tray icon lives in your menu bar / system tray. It automatically starts
 ```toml
 [ingestion]
 poll_interval_secs = 30
-claude_model = "claude-sonnet-4-20250514"
 
 [consolidation]
 interval_secs = 7200
@@ -86,6 +85,10 @@ idle_threshold_secs = 300       # wait 5 min before digesting a session
 max_turns_per_extraction = 200  # chunk large conversations
 similarity_threshold = 0.8
 merge_threshold = 0.85
+
+[claude]
+extraction_model = "claude-sonnet-4-20250514"   # knowledge extraction
+compression_model = "claude-haiku-4-5-20251001" # recursive summarization
 
 [database]
 path = "~/.lore/memory.db"
@@ -100,6 +103,6 @@ path = "~/.lore/memory.db"
 
 ```sh
 cargo build              # build all crates
-cargo test               # 105 tests
+cargo test               # 113 tests
 cargo clippy --workspace # lint
 ```
