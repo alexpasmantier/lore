@@ -70,10 +70,7 @@ impl LoreDb {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Dedup by tree: keep only the best-scoring fragment per root
         let mut seen_roots = std::collections::HashSet::new();
@@ -284,6 +281,22 @@ impl LoreDb {
         self.storage.get_associations(id).unwrap_or_default()
     }
 
+    /// Find the maximum cosine similarity between content and existing L0 roots.
+    /// Returns None only if the embedder is unavailable.
+    /// Returns Some(0.0) if no roots exist (content is maximally novel).
+    pub fn max_root_similarity(&self, content: &str) -> Option<f32> {
+        let embedding = self.embed_text(content)?;
+        let roots = self.storage.get_fragments_with_embeddings(Some(0)).ok()?;
+
+        let max_sim = roots
+            .iter()
+            .filter(|r| !r.embedding.is_empty() && r.superseded_by.is_none())
+            .map(|r| cosine_similarity(&embedding, &r.embedding))
+            .reduce(f32::max);
+
+        Some(max_sim.unwrap_or(0.0))
+    }
+
     /// Find the best parent root (L0) for a fragment by embedding similarity.
     /// Returns the parent FragmentId if a sufficiently similar root exists (cosine > threshold).
     pub fn find_best_parent(&self, content: &str, threshold: f32) -> Option<FragmentId> {
@@ -399,7 +412,10 @@ impl LoreDb {
         // Search all depths
         let mut all_fragments = Vec::new();
         for depth in 0..10 {
-            let frags = self.storage.get_fragments_at_depth(depth).unwrap_or_default();
+            let frags = self
+                .storage
+                .get_fragments_at_depth(depth)
+                .unwrap_or_default();
             if frags.is_empty() {
                 break;
             }
@@ -432,10 +448,7 @@ impl LoreDb {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Dedup by tree
         let mut seen_roots = std::collections::HashSet::new();
@@ -607,6 +620,13 @@ mod tests {
 
         let loaded = db.storage().get_fragment(topic_id).unwrap().unwrap();
         assert_eq!(loaded.content, "Updated Rust content");
+    }
+
+    #[test]
+    fn test_max_root_similarity_without_embedder() {
+        let db = make_test_db();
+        // Without embedder, should return None
+        assert!(db.max_root_similarity("rust programming").is_none());
     }
 
     #[test]

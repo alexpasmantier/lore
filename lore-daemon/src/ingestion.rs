@@ -12,6 +12,12 @@ const MIN_ROOT_LENGTH: usize = 150;
 /// Each summarization level compresses by this factor.
 const COMPRESSION_RATIO: usize = 3;
 
+/// Scaling factor for prediction-error importance boost.
+/// Novel content (low similarity to existing roots) gets a higher multiplier,
+/// making it decay slower and persist longer. Based on the neuroscience finding
+/// that prediction error enhances memory encoding strength.
+const PREDICTION_ERROR_ALPHA: f32 = 0.5;
+
 /// Session context passed to prompts.
 pub struct SessionContext {
     pub cwd: Option<String>,
@@ -216,6 +222,16 @@ async fn compress_to_tree(
     Ok(levels)
 }
 
+/// Compute the importance multiplier based on prediction error.
+/// Novel content (low similarity to existing roots) gets a higher multiplier.
+/// Returns 1.0 (no adjustment) when similarity can't be computed (no embedder).
+fn prediction_error_multiplier(max_root_similarity: Option<f32>) -> f32 {
+    match max_root_similarity {
+        Some(sim) => 1.0 + PREDICTION_ERROR_ALPHA * (1.0 - sim.clamp(0.0, 1.0)),
+        None => 1.0,
+    }
+}
+
 /// Store the extraction result in the database. Returns the number of fragments stored.
 pub fn store_extraction_result(
     db: &LoreDb,
@@ -248,6 +264,18 @@ pub fn store_extraction_result(
             continue;
         }
 
+        // Prediction-error-weighted encoding: novel content gets importance boost
+        let max_sim = db.max_root_similarity(&tree_levels[0]);
+        let pe_multiplier = prediction_error_multiplier(max_sim);
+        if let Some(sim) = max_sim {
+            tracing::debug!(
+                "Prediction error: max_sim={:.3}, multiplier={:.3} for {:?}",
+                sim,
+                pe_multiplier,
+                &tree_levels[0][..tree_levels[0].len().min(60)]
+            );
+        }
+
         let total = tree_levels.len();
         let mut parent_id: Option<FragmentId> = None;
         let mut root_id = None;
@@ -256,13 +284,14 @@ pub fn store_extraction_result(
         for (i, content) in tree_levels.iter().enumerate() {
             let depth = i as u32;
 
-            let importance = if i == 0 {
+            let base_importance = if i == 0 {
                 0.9
             } else if i == total - 1 {
                 0.5
             } else {
                 0.7
             };
+            let importance = (base_importance * pe_multiplier).clamp(0.0, 1.0);
 
             let mut frag = Fragment::new_with_importance(content.clone(), depth, importance);
             frag.source_session = source_session.map(String::from);
@@ -344,6 +373,28 @@ mod tests {
     }
 
     #[test]
+    fn test_prediction_error_multiplier_values() {
+        // No similarity data (no embedder) → no adjustment
+        assert_eq!(super::prediction_error_multiplier(None), 1.0);
+
+        // No existing roots (maximum novelty) → maximum boost
+        let m = super::prediction_error_multiplier(Some(0.0));
+        assert!((m - 1.5).abs() < 0.01, "Got {}", m);
+
+        // Very similar to existing root → minimal boost
+        let m = super::prediction_error_multiplier(Some(0.9));
+        assert!((m - 1.05).abs() < 0.01, "Got {}", m);
+
+        // Identical to existing root → no boost
+        let m = super::prediction_error_multiplier(Some(1.0));
+        assert!((m - 1.0).abs() < 0.01, "Got {}", m);
+
+        // Moderate novelty → moderate boost
+        let m = super::prediction_error_multiplier(Some(0.5));
+        assert!((m - 1.25).abs() < 0.01, "Got {}", m);
+    }
+
+    #[test]
     fn test_store_extraction_result_empty() {
         let storage = lore_db::Storage::open_memory().unwrap();
         let db = LoreDb::new_without_embeddings(storage);
@@ -363,7 +414,10 @@ mod tests {
         let result = ExtractionResult {
             transcript: "raw conversation here".to_string(),
             trees: vec![
-                vec!["broad concept".to_string(), "detailed knowledge".to_string()],
+                vec![
+                    "broad concept".to_string(),
+                    "detailed knowledge".to_string(),
+                ],
                 vec!["another concept".to_string()],
             ],
             relationships: vec![],
