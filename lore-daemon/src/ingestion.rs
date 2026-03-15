@@ -32,6 +32,7 @@ const SCHEMA_HIGH_FIT: f32 = 0.75;
 const SCHEMA_LOW_FIT: f32 = 0.35;
 
 /// Session context passed to prompts.
+#[derive(Clone)]
 pub struct SessionContext {
     pub cwd: Option<String>,
     pub git_branch: Option<String>,

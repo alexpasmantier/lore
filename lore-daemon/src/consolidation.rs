@@ -150,8 +150,38 @@ async fn phase0_digest_staged(
             .unwrap_or("unknown")
             .to_string();
 
-        tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
-        tasks.push((session.file_path.clone(), turns, session_ctx, session_id));
+        // Event boundary detection: split long sessions at topic shifts
+        let boundaries = parser::detect_topic_boundaries(&turns);
+        let num_segments = boundaries.len();
+        let mut start = 0;
+        for (seg_idx, &end) in boundaries.iter().enumerate() {
+            let segment = turns[start..end].to_vec();
+            let seg_session_id = if num_segments > 1 {
+                format!("{}-seg{}", session_id, seg_idx)
+            } else {
+                session_id.clone()
+            };
+
+            if num_segments > 1 {
+                tracing::info!(
+                    "Digesting segment {}/{} ({} turns) from {}",
+                    seg_idx + 1,
+                    num_segments,
+                    segment.len(),
+                    session.file_path
+                );
+            } else {
+                tracing::info!("Digesting {} turns from {}", turns.len(), session.file_path);
+            }
+
+            tasks.push((
+                session.file_path.clone(),
+                segment,
+                session_ctx.clone(),
+                seg_session_id,
+            ));
+            start = end;
+        }
     }
 
     // Extract knowledge from all sessions concurrently
@@ -160,8 +190,13 @@ async fn phase0_digest_staged(
 
     let results: Vec<_> = stream::iter(tasks.iter().map(
         |(file_path, turns, ctx, session_id)| async move {
-            let result =
-                ingestion::extract_knowledge_trees(extraction_client, compression_client, turns, Some(ctx)).await;
+            let result = ingestion::extract_knowledge_trees(
+                extraction_client,
+                compression_client,
+                turns,
+                Some(ctx),
+            )
+            .await;
             (file_path.as_str(), session_id.as_str(), result)
         },
     ))
@@ -172,6 +207,7 @@ async fn phase0_digest_staged(
     // Store results sequentially (DB writes are fast)
     let mut total_sessions = 0;
     let mut total_fragments = 0;
+    let mut deleted_sessions = std::collections::HashSet::new();
 
     for (file_path, session_id, result) in &results {
         match result {
@@ -191,8 +227,11 @@ async fn phase0_digest_staged(
             Err(e) => tracing::error!("Extraction failed (continuing): {}", e),
         }
 
-        db.storage().delete_staged_turns(file_path)?;
-        total_sessions += 1;
+        // Deduplicate deletion for sessions split into segments
+        if deleted_sessions.insert(*file_path) {
+            db.storage().delete_staged_turns(file_path)?;
+            total_sessions += 1;
+        }
     }
 
     Ok((total_sessions, total_fragments))
