@@ -132,8 +132,12 @@ fn knowledge_roots(roots: Vec<Fragment>) -> Vec<Fragment> {
 fn ingest_all(db: &LoreDb) {
     store_extraction_result(db, &extraction_rust_errors(), Some("session-rust-errors")).unwrap();
     store_extraction_result(db, &extraction_debugging(), Some("session-debugging")).unwrap();
-    store_extraction_result(db, &extraction_async_patterns(), Some("session-async-patterns"))
-        .unwrap();
+    store_extraction_result(
+        db,
+        &extraction_async_patterns(),
+        Some("session-async-patterns"),
+    )
+    .unwrap();
     store_extraction_result(db, &extraction_chatter(), Some("session-chatter")).unwrap();
 }
 

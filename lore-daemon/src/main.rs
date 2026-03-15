@@ -12,10 +12,7 @@ use lore_daemon::status::{self, DaemonState};
 use lore_daemon::watcher::FileWatcher;
 
 #[derive(Parser)]
-#[command(
-    name = "lore",
-    about = "Persistent memory for AI agents"
-)]
+#[command(name = "lore", about = "Persistent memory for AI agents")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -80,8 +77,8 @@ enum Command {
     Staged,
     /// Push staged turns to a remote lore server
     Sync {
-        /// Server URL (e.g. http://localhost:8080)
-        remote: String,
+        /// Server URL (e.g. http://localhost:8080). Reads from config if omitted.
+        remote: Option<String>,
         /// Client identifier (defaults to hostname)
         #[arg(long)]
         client_id: Option<String>,
@@ -169,7 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Consolidate => run_single_consolidation(config).await?,
                 Command::Query { topic, limit } => cli_query(config, &topic, limit)?,
                 Command::Sync { remote, client_id } => {
-                    cli_sync(config, &remote, client_id.as_deref()).await?
+                    let url = remote
+                        .or_else(|| config.remote.as_ref().map(|r| r.url.clone()))
+                        .ok_or(
+                            "No server URL: pass one as argument or set [remote] url in config",
+                        )?;
+                    cli_sync(config, &url, client_id.as_deref()).await?
                 }
                 _ => unreachable!(),
             }
@@ -205,6 +207,8 @@ async fn run_foreground(config: Config) -> Result<(), Box<dyn std::error::Error>
 
     if let Some(ref remote) = config.remote {
         // Remote mode: ingest + sync (no local consolidation)
+        status::set_mode(status::DaemonMode::Remote);
+        status::write_status(DaemonState::Idle); // re-write with mode
         run_remote_loop(&db, &watcher, remote, &mut shutdown_rx).await?;
     } else {
         // Local mode: ingest + consolidate
@@ -319,12 +323,15 @@ async fn run_remote_loop(
                 status::write_status(DaemonState::Idle);
             }
             _ = sync_timer.tick() => {
+                status::write_status(DaemonState::Syncing);
                 if let Err(e) = run_sync(db, &http, &push_url, &client_id).await {
                     tracing::error!("Sync error: {}", e);
                 }
+                status::write_status(DaemonState::Idle);
             }
             _ = shutdown_rx.changed() => {
                 // Final sync before shutdown
+                status::write_status(DaemonState::Syncing);
                 let _ = run_sync(db, &http, &push_url, &client_id).await;
                 tracing::info!("Shutting down...");
                 break;
@@ -527,8 +534,16 @@ fn show_status() -> Result<(), Box<dyn std::error::Error>> {
                 DaemonState::Idle => "idle",
                 DaemonState::Ingesting => "ingesting",
                 DaemonState::Consolidating => "consolidating",
+                DaemonState::Syncing => "syncing",
             };
-            println!("Lore: running (PID: {}, state: {})", s.pid, state);
+            let mode = match s.mode {
+                status::DaemonMode::Local => "local",
+                status::DaemonMode::Remote => "remote",
+            };
+            println!(
+                "Lore: running (PID: {}, state: {}, mode: {})",
+                s.pid, state, mode
+            );
             return Ok(());
         }
     }
@@ -640,11 +655,7 @@ fn cli_roots(
     Ok(())
 }
 
-fn cli_query(
-    config: Config,
-    topic: &str,
-    limit: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cli_query(config: Config, topic: &str, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
     let db = open_db(&config)?;
     let results = db.query(topic, limit);
 
@@ -664,11 +675,7 @@ fn cli_query(
             short_id
         );
         if !sf.breadcrumb.is_empty() {
-            let crumbs: Vec<String> = sf
-                .breadcrumb
-                .iter()
-                .map(|c| preview(c, 40))
-                .collect();
+            let crumbs: Vec<String> = sf.breadcrumb.iter().map(|c| preview(c, 40)).collect();
             println!("   {} >", crumbs.join(" > "));
         }
         println!("   {}", preview(&f.content, 80));
@@ -783,6 +790,7 @@ async fn cli_sync(
 
     let client_id = client_id
         .map(String::from)
+        .or_else(|| config.remote.as_ref().and_then(|r| r.client_id.clone()))
         .or_else(|| hostname::get().ok().and_then(|h| h.into_string().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -813,14 +821,17 @@ async fn cli_sync(
         url
     );
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await?;
+    // Update status file so the tray shows "Syncing…"
+    let daemon_pid = running_daemon_pid();
+    if config.remote.is_some() {
+        status::set_mode(status::DaemonMode::Remote);
+    }
+    status::write_status(DaemonState::Syncing);
 
-    if resp.status().is_success() {
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).json(&body).send().await?;
+
+    let result = if resp.status().is_success() {
         let result: serde_json::Value = resp.json().await?;
         println!(
             "Synced: {} turns staged on server.",
@@ -832,11 +843,20 @@ async fn cli_sync(
             db.storage().delete_staged_turns(&session.file_path)?;
         }
         println!("Local staging area cleared.");
+        Ok(())
     } else {
-        eprintln!("Server error: {} {}", resp.status(), resp.text().await?);
+        let status_code = resp.status();
+        let body = resp.text().await?;
+        Err(format!("Server error: {} {}", status_code, body))
+    };
+
+    // Restore status
+    match daemon_pid {
+        Some(pid) => status::write_status_for_pid(DaemonState::Idle, pid),
+        None => status::clear_status(),
     }
 
-    Ok(())
+    result.map_err(|e| e.into())
 }
 
 fn shutdown_signal_handler(shutdown_tx: tokio::sync::watch::Sender<bool>) {

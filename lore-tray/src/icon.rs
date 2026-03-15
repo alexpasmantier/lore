@@ -8,6 +8,7 @@ pub const ICON_SIZE: u32 = 64;
 pub enum IconColor {
     Red,
     Orange,
+    Green,
 }
 
 /// Generate a `size × size` RGBA pixel buffer for the eye icon.
@@ -25,6 +26,7 @@ pub fn generate(size: u32, brightness: f32, color: IconColor) -> Vec<u8> {
     let (base_r, base_g, base_b) = match color {
         IconColor::Red => (1.0_f64, 0.06, 0.02),
         IconColor::Orange => (1.0, 0.50, 0.06),
+        IconColor::Green => (0.10, 0.90, 0.25),
     };
 
     let b = brightness as f64;

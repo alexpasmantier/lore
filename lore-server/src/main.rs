@@ -68,7 +68,10 @@ async fn handle_push(
     State(state): State<AppState>,
     Json(req): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, StatusCode> {
-    let storage = state.storage.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut total = 0;
     // Group turns by session
@@ -104,7 +107,10 @@ async fn handle_push(
 }
 
 async fn handle_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
-    let storage = state.storage.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let now = lore_db::fragment::now_unix();
     let sessions = storage
         .get_staged_sessions(0, now + 1)
@@ -148,8 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_manager = LocalSessionManager::default();
     let mcp_service = StreamableHttpService::new(
         move || {
-            MemoryServer::new(mcp_db_path.clone())
-                .map_err(|e| std::io::Error::other(e.to_string()))
+            MemoryServer::new(mcp_db_path.clone()).map_err(|e| std::io::Error::other(e.to_string()))
         },
         session_manager.into(),
         Default::default(),

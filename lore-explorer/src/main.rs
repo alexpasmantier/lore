@@ -106,12 +106,9 @@ impl ExplorerApp {
                                 if content_lower.contains(&query_lower) {
                                     0.8
                                 } else {
-                                    let words: Vec<&str> =
-                                        query_lower.split_whitespace().collect();
-                                    let matches = words
-                                        .iter()
-                                        .filter(|w| content_lower.contains(*w))
-                                        .count();
+                                    let words: Vec<&str> = query_lower.split_whitespace().collect();
+                                    let matches =
+                                        words.iter().filter(|w| content_lower.contains(*w)).count();
                                     if matches > 0 {
                                         0.3 + 0.4 * matches as f32 / words.len() as f32
                                     } else {
@@ -132,8 +129,11 @@ impl ExplorerApp {
                         }
                     }
 
-                    all_results
-                        .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                    all_results.sort_by(|a, b| {
+                        b.score
+                            .partial_cmp(&a.score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                     all_results.truncate(TOP_N);
                     all_results
                 };
@@ -331,11 +331,7 @@ impl eframe::App for ExplorerApp {
                             .add(egui::Label::new(&display_text).sense(egui::Sense::click()))
                             .clicked()
                         {
-                            self.expanded = if is_expanded {
-                                None
-                            } else {
-                                Some(entry.id)
-                            };
+                            self.expanded = if is_expanded { None } else { Some(entry.id) };
                         }
                     });
                 }

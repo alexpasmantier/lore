@@ -25,6 +25,13 @@ enum TrayState {
     Idle,
     Ingesting,
     Consolidating,
+    Syncing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TrayMode {
+    Local,
+    Remote,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +40,9 @@ struct StatusFile {
     pid: u32,
     #[allow(dead_code)]
     updated_at: i64,
+    /// "local" or "remote". Absent in older daemon versions → defaults to local.
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 fn lore_home() -> PathBuf {
@@ -45,39 +55,47 @@ fn status_path() -> PathBuf {
     lore_home().join("daemon.status")
 }
 
-fn poll_state() -> TrayState {
+fn poll_daemon() -> (TrayState, TrayMode) {
     let content = match std::fs::read_to_string(status_path()) {
         Ok(c) => c,
-        Err(_) => return TrayState::Stopped,
+        Err(_) => return (TrayState::Stopped, TrayMode::Local),
     };
 
     let status: StatusFile = match serde_json::from_str(&content) {
         Ok(s) => s,
-        Err(_) => return TrayState::Stopped,
+        Err(_) => return (TrayState::Stopped, TrayMode::Local),
     };
 
     // Reject invalid PIDs: 0 would check our own process group via kill(2).
     if status.pid == 0 {
-        return TrayState::Stopped;
+        return (TrayState::Stopped, TrayMode::Local);
     }
 
     // Verify the process is still alive.
     let pid = status.pid as i32;
     if pid <= 0 {
         // u32 > i32::MAX overflowed to negative — treat as invalid.
-        return TrayState::Stopped;
+        return (TrayState::Stopped, TrayMode::Local);
     }
     let alive = unsafe { libc::kill(pid, 0) } == 0;
     if !alive {
-        return TrayState::Stopped;
+        return (TrayState::Stopped, TrayMode::Local);
     }
 
-    match status.state.as_str() {
+    let mode = match status.mode.as_deref() {
+        Some("remote") => TrayMode::Remote,
+        _ => TrayMode::Local,
+    };
+
+    let state = match status.state.as_str() {
         "idle" => TrayState::Idle,
         "ingesting" => TrayState::Ingesting,
         "consolidating" => TrayState::Consolidating,
+        "syncing" => TrayState::Syncing,
         _ => TrayState::Idle,
-    }
+    };
+
+    (state, mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +153,15 @@ fn trigger_ingest() {
 fn trigger_consolidate() {
     let _ = std::process::Command::new(daemon_binary())
         .arg("consolidate")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn trigger_sync() {
+    let _ = std::process::Command::new(daemon_binary())
+        .arg("sync")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -246,12 +273,13 @@ fn main() {
         .expect("failed to create tray icon");
 
     // -- Auto-start daemon if not already running --------------------------
-    if poll_state() == TrayState::Stopped {
+    if poll_daemon().0 == TrayState::Stopped {
         start_daemon();
     }
 
     // -- State tracking ----------------------------------------------------
     let mut state = TrayState::Stopped;
+    let mut mode = TrayMode::Local;
     let mut frame: usize = 0;
     let mut last_update = Instant::now()
         .checked_sub(POLL_INTERVAL)
@@ -264,11 +292,11 @@ fn main() {
         let now = Instant::now();
 
         // Wake up at the right cadence for the current state.
-        let interval = if matches!(state, TrayState::Ingesting | TrayState::Consolidating) {
-            FRAME_INTERVAL
-        } else {
-            POLL_INTERVAL
-        };
+        let busy = matches!(
+            state,
+            TrayState::Ingesting | TrayState::Consolidating | TrayState::Syncing
+        );
+        let interval = if busy { FRAME_INTERVAL } else { POLL_INTERVAL };
         *control_flow = ControlFlow::WaitUntil(now + interval);
 
         // -- Handle menu clicks --------------------------------------------
@@ -280,12 +308,17 @@ fn main() {
             } else if event.id == ingest_id {
                 trigger_ingest();
             } else if event.id == consolidate_id {
-                trigger_consolidate();
+                // In remote mode this button becomes "Trigger Sync"
+                if mode == TrayMode::Remote {
+                    trigger_sync();
+                } else {
+                    trigger_consolidate();
+                }
             } else if event.id == logs_id {
                 view_logs();
             } else if event.id == quit_id {
                 // Stop the daemon before quitting
-                if poll_state() != TrayState::Stopped {
+                if poll_daemon().0 != TrayState::Stopped {
                     stop_daemon();
                 }
                 *control_flow = ControlFlow::Exit;
@@ -300,8 +333,18 @@ fn main() {
         last_update = now;
 
         // -- Poll daemon state ---------------------------------------------
-        let new_state = poll_state();
+        let (new_state, new_mode) = poll_daemon();
         let state_changed = new_state != state;
+        let mode_changed = new_mode != mode;
+
+        if mode_changed {
+            mode = new_mode;
+            // Swap the action label for the consolidate/sync slot.
+            match mode {
+                TrayMode::Local => consolidate_item.set_text("Trigger Consolidation"),
+                TrayMode::Remote => consolidate_item.set_text("Trigger Sync"),
+            }
+        }
 
         if state_changed {
             state = new_state;
@@ -313,12 +356,16 @@ fn main() {
                 TrayState::Idle => "Idle",
                 TrayState::Ingesting => "Ingesting\u{2026}",
                 TrayState::Consolidating => "Consolidating\u{2026}",
+                TrayState::Syncing => "Syncing\u{2026}",
             };
             header_item.set_text(format!("Lore v0.1.0\t\t{status}"));
 
             // Toggle menu items.
             let running = !matches!(state, TrayState::Stopped);
-            let busy = matches!(state, TrayState::Ingesting | TrayState::Consolidating);
+            let busy = matches!(
+                state,
+                TrayState::Ingesting | TrayState::Consolidating | TrayState::Syncing
+            );
             start_item.set_enabled(!running);
             stop_item.set_enabled(running);
             ingest_item.set_enabled(running && !busy);
@@ -330,12 +377,16 @@ fn main() {
                 TrayState::Idle => "Lore - Running",
                 TrayState::Ingesting => "Lore - Ingesting\u{2026}",
                 TrayState::Consolidating => "Lore - Consolidating\u{2026}",
+                TrayState::Syncing => "Lore - Syncing\u{2026}",
             };
             tray.set_tooltip(Some(tip)).ok();
         }
 
         // -- Update icon ---------------------------------------------------
-        let animating = matches!(state, TrayState::Ingesting | TrayState::Consolidating);
+        let animating = matches!(
+            state,
+            TrayState::Ingesting | TrayState::Consolidating | TrayState::Syncing
+        );
 
         if state_changed || animating {
             let (brightness, color) = match state {
@@ -350,6 +401,11 @@ fn main() {
                     let t = frame as f32 / PULSE_FRAMES as f32 * std::f32::consts::TAU;
                     let b = 0.3 + 0.7 * (t.sin() + 1.0) / 2.0;
                     (b, icon::IconColor::Orange)
+                }
+                TrayState::Syncing => {
+                    let t = frame as f32 / PULSE_FRAMES as f32 * std::f32::consts::TAU;
+                    let b = 0.3 + 0.7 * (t.sin() + 1.0) / 2.0;
+                    (b, icon::IconColor::Green)
                 }
             };
 
