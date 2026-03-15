@@ -18,6 +18,19 @@ const COMPRESSION_RATIO: usize = 3;
 /// that prediction error enhances memory encoding strength.
 const PREDICTION_ERROR_ALPHA: f32 = 0.5;
 
+/// Schema-fit threshold for fast cortical assimilation.
+/// Content above this similarity to an existing root is attached as a child
+/// rather than creating a new root — like the brain's mPFC routing congruent
+/// information directly into established schemas.
+const SCHEMA_HIGH_FIT: f32 = 0.75;
+
+/// Schema-fit threshold below which content is treated as genuinely novel.
+/// Content below this creates a standalone root — like hippocampal encoding
+/// for information that doesn't fit existing schemas.
+/// Content between LOW and HIGH fit creates a new root with an associative
+/// link to the nearest existing root.
+const SCHEMA_LOW_FIT: f32 = 0.35;
+
 /// Session context passed to prompts.
 pub struct SessionContext {
     pub cwd: Option<String>,
@@ -264,25 +277,51 @@ pub fn store_extraction_result(
             continue;
         }
 
-        // Prediction-error-weighted encoding: novel content gets importance boost
-        let max_sim = db.max_root_similarity(&tree_levels[0]);
+        // Compute embedding once for schema-fit scoring and prediction error
+        let root_embedding = db.embed_text(&tree_levels[0]);
+        let best_root = root_embedding
+            .as_ref()
+            .and_then(|emb| db.find_best_root_by_embedding(emb));
+
+        // Prediction-error-weighted encoding
+        let max_sim = best_root
+            .map(|(_, sim)| sim)
+            .or_else(|| root_embedding.as_ref().map(|_| 0.0));
         let pe_multiplier = prediction_error_multiplier(max_sim);
-        if let Some(sim) = max_sim {
-            tracing::debug!(
-                "Prediction error: max_sim={:.3}, multiplier={:.3} for {:?}",
-                sim,
-                pe_multiplier,
-                &tree_levels[0][..tree_levels[0].len().min(60)]
-            );
-        }
+
+        // Schema-based dual routing: route based on similarity band
+        let (depth_offset, schema_parent) = match best_root {
+            Some((root_id, sim)) if sim > SCHEMA_HIGH_FIT => {
+                // High fit: fast assimilation — attach under existing root
+                tracing::debug!(
+                    "Schema routing: HIGH fit ({:.3}), assimilating under existing root",
+                    sim
+                );
+                db.reinforce_on_access(root_id);
+                (1u32, Some(root_id))
+            }
+            Some((_, sim)) if sim > SCHEMA_LOW_FIT => {
+                // Moderate fit: create new tree, link to nearest root later
+                tracing::debug!(
+                    "Schema routing: MODERATE fit ({:.3}), new tree with associative link",
+                    sim
+                );
+                (0, None)
+            }
+            _ => {
+                // Low fit or no match: standalone tree (hippocampal encoding)
+                (0, None)
+            }
+        };
 
         let total = tree_levels.len();
-        let mut parent_id: Option<FragmentId> = None;
-        let mut root_id = None;
+        let mut parent_id: Option<FragmentId> = schema_parent;
+        let mut root_id = schema_parent;
+        let mut first_id = None;
         let mut leaf_id = None;
 
         for (i, content) in tree_levels.iter().enumerate() {
-            let depth = i as u32;
+            let depth = (i as u32) + depth_offset;
 
             let base_importance = if i == 0 {
                 0.9
@@ -298,7 +337,10 @@ pub fn store_extraction_result(
             let frag_id = db.insert(frag, parent_id)?;
 
             if i == 0 {
-                root_id = Some(frag_id);
+                first_id = Some(frag_id);
+                if root_id.is_none() {
+                    root_id = Some(frag_id);
+                }
             }
             parent_id = Some(frag_id);
             leaf_id = Some(frag_id);
@@ -307,6 +349,19 @@ pub fn store_extraction_result(
 
         if let Some(rid) = root_id {
             tree_root_ids.push(rid);
+        }
+
+        // Moderate fit: create associative link between new root and nearest existing root
+        if let (Some((best_root_id, sim)), Some(new_first_id)) = (best_root, first_id) {
+            if sim > SCHEMA_LOW_FIT && sim <= SCHEMA_HIGH_FIT {
+                let _ = db.link_with_content(
+                    new_first_id,
+                    best_root_id,
+                    EdgeKind::Associative,
+                    sim,
+                    Some("schema-fit link".to_string()),
+                );
+            }
         }
 
         // Link the leaf of this tree to the transcript

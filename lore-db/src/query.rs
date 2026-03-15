@@ -281,6 +281,17 @@ impl LoreDb {
         self.storage.get_associations(id).unwrap_or_default()
     }
 
+    /// Find the most similar L0 root by pre-computed embedding, returning its ID and similarity.
+    /// Returns None if no non-superseded roots with embeddings exist.
+    pub fn find_best_root_by_embedding(&self, embedding: &[f32]) -> Option<(FragmentId, f32)> {
+        let roots = self.storage.get_fragments_with_embeddings(Some(0)).ok()?;
+        roots
+            .iter()
+            .filter(|r| !r.embedding.is_empty() && r.superseded_by.is_none())
+            .map(|r| (r.id, cosine_similarity(embedding, &r.embedding)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
     /// Find the maximum cosine similarity between content and existing L0 roots.
     /// Returns None only if the embedder is unavailable.
     /// Returns Some(0.0) if no roots exist (content is maximally novel).
@@ -627,6 +638,32 @@ mod tests {
         let db = make_test_db();
         // Without embedder, should return None
         assert!(db.max_root_similarity("rust programming").is_none());
+    }
+
+    #[test]
+    fn test_find_best_root_by_embedding() {
+        let db = make_test_db();
+        // The test DB has a root with embedding vec![0.1; 384]
+
+        // Identical embedding should find the root with sim ~1.0
+        let result = db.find_best_root_by_embedding(&vec![0.1; 384]);
+        assert!(result.is_some());
+        let (id, sim) = result.unwrap();
+        assert!(
+            sim > 0.99,
+            "Identical embedding sim should be ~1.0, got {}",
+            sim
+        );
+
+        let root = db.storage().get_fragment(id).unwrap().unwrap();
+        assert_eq!(root.content, "Rust programming language");
+
+        // Empty DB should return None
+        let empty_storage = Storage::open_memory().unwrap();
+        let empty_db = LoreDb::new_without_embeddings(empty_storage);
+        assert!(empty_db
+            .find_best_root_by_embedding(&vec![0.1; 384])
+            .is_none());
     }
 
     #[test]
