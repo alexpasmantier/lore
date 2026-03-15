@@ -609,14 +609,15 @@ fn cli_roots(
         return Ok(());
     }
 
-    println!("{:<38} {:>5} {:>5}  Content", "ID", "Rel", "Acc");
-    println!("{}", "-".repeat(100));
+    println!("{:<10} {:>5} {:>5}  Content", "ID", "Rel", "Acc");
+    println!("{}", "-".repeat(90));
     for t in &roots {
         let children = db.children(t.id).len();
         let content_preview = preview(&t.content, 60);
+        let short_id = &t.id.to_string()[..8];
         println!(
-            "{:<38} {:.2}  {:>4}  {} {}",
-            t.id,
+            "{:<10} {:.2}  {:>4}  {} {}",
+            short_id,
             t.relevance_score,
             t.access_count,
             content_preview,
