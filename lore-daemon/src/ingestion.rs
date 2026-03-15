@@ -50,7 +50,8 @@ pub struct ExtractionResult {
 /// extract insights, split into topics, and identify relationships.
 /// Then optionally compress long topics into abstraction trees.
 pub async fn extract_knowledge_trees(
-    client: &ClaudeClient,
+    extraction_client: &ClaudeClient,
+    compression_client: Option<&ClaudeClient>,
     turns: &[ConversationTurn],
     session: Option<&SessionContext>,
 ) -> Result<ExtractionResult, Box<dyn std::error::Error>> {
@@ -87,7 +88,7 @@ pub async fn extract_knowledge_trees(
          Respond with ONLY the extracted topics and relationships, no preamble, no JSON."
     );
 
-    let response = client.complete(&prompt).await?;
+    let response = extraction_client.complete(&prompt).await?;
     let response = response.trim();
 
     if response.is_empty() || response == "EMPTY" {
@@ -147,9 +148,10 @@ pub async fn extract_knowledge_trees(
     // Compress long topics into abstraction trees, store short ones as-is
     let mut trees = Vec::new();
 
+    let compress_client = compression_client.unwrap_or(extraction_client);
     for topic in &topics {
         if topic.len() >= MIN_COMPRESS_LENGTH {
-            let tree = compress_to_tree(client, topic, session).await?;
+            let tree = compress_to_tree(compress_client, topic, session).await?;
             if !tree.is_empty() {
                 trees.push(tree);
             }

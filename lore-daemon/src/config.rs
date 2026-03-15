@@ -22,8 +22,6 @@ pub struct IngestionConfig {
     pub poll_interval_secs: u64,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    #[serde(default = "default_claude_model")]
-    pub claude_model: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +57,12 @@ pub struct DatabaseConfig {
 pub struct ClaudeConfig {
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
+    /// Model for knowledge extraction (extract + split topics).
+    #[serde(default = "default_extraction_model")]
+    pub extraction_model: String,
+    /// Model for recursive compression (summarization).
+    #[serde(default = "default_compression_model")]
+    pub compression_model: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,8 +86,11 @@ fn default_poll_interval() -> u64 {
 fn default_batch_size() -> usize {
     100
 }
-fn default_claude_model() -> String {
+fn default_extraction_model() -> String {
     "claude-sonnet-4-20250514".to_string()
+}
+fn default_compression_model() -> String {
+    "claude-haiku-4-5-20251001".to_string()
 }
 fn default_consolidation_interval() -> u64 {
     7200
@@ -121,7 +128,6 @@ impl Default for IngestionConfig {
         Self {
             poll_interval_secs: default_poll_interval(),
             batch_size: default_batch_size(),
-            claude_model: default_claude_model(),
         }
     }
 }
@@ -152,6 +158,8 @@ impl Default for ClaudeConfig {
     fn default() -> Self {
         Self {
             api_key_env: default_api_key_env(),
+            extraction_model: default_extraction_model(),
+            compression_model: default_compression_model(),
         }
     }
 }

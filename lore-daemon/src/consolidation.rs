@@ -9,7 +9,8 @@ use crate::parser::{self, ConversationTurn};
 /// Run all consolidation phases.
 pub async fn run_consolidation(
     db: &LoreDb,
-    client: Option<&ClaudeClient>,
+    extraction_client: Option<&ClaudeClient>,
+    compression_client: Option<&ClaudeClient>,
     config: &ConsolidationConfig,
 ) -> Result<ConsolidationStats, Box<dyn std::error::Error>> {
     let mut stats = ConsolidationStats::default();
@@ -18,8 +19,9 @@ pub async fn run_consolidation(
     tracing::info!("Starting consolidation...");
 
     // Phase 0: Digest staged conversations into knowledge fragments
-    if let Some(client) = client {
-        let (sessions, fragments) = phase0_digest_staged(db, client, config).await?;
+    if let Some(client) = extraction_client {
+        let (sessions, fragments) =
+            phase0_digest_staged(db, client, compression_client, config).await?;
         stats.sessions_digested = sessions;
         stats.fragments_extracted = fragments;
         tracing::info!(
@@ -53,7 +55,7 @@ pub async fn run_consolidation(
     tracing::info!("Phase 3: Created {} associative links", stats.links_created);
 
     // Phase 4: Re-summarization of roots with modified children
-    if let Some(client) = client {
+    if let Some(client) = extraction_client {
         stats.roots_resummarized = phase3_resummarization(db, client).await?;
         tracing::info!("Phase 4: Re-summarized {} roots", stats.roots_resummarized);
 
@@ -101,7 +103,8 @@ const MAX_SESSIONS_PER_CONSOLIDATION: usize = 10;
 /// Phase 0: Digest staged conversation turns into knowledge fragments.
 async fn phase0_digest_staged(
     db: &LoreDb,
-    client: &ClaudeClient,
+    extraction_client: &ClaudeClient,
+    compression_client: Option<&ClaudeClient>,
     config: &ConsolidationConfig,
 ) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let now = now_unix();
@@ -157,7 +160,8 @@ async fn phase0_digest_staged(
 
     let results: Vec<_> = stream::iter(tasks.iter().map(
         |(file_path, turns, ctx, session_id)| async move {
-            let result = ingestion::extract_knowledge_trees(client, turns, Some(ctx)).await;
+            let result =
+                ingestion::extract_knowledge_trees(extraction_client, compression_client, turns, Some(ctx)).await;
             (file_path.as_str(), session_id.as_str(), result)
         },
     ))

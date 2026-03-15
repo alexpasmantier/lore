@@ -543,7 +543,7 @@ async fn consolidation_recomputes_relevance_for_all_fragments() {
     ingest_all(&db);
 
     let config = default_consolidation_config();
-    let stats = consolidation::run_consolidation(&db, None, &config)
+    let stats = consolidation::run_consolidation(&db, None, None, &config)
         .await
         .unwrap();
 
@@ -598,7 +598,7 @@ async fn old_low_importance_fragments_are_pruned_by_consolidation() {
 
     // Run consolidation
     let config = default_consolidation_config();
-    let stats = consolidation::run_consolidation(&db, None, &config)
+    let stats = consolidation::run_consolidation(&db, None, None, &config)
         .await
         .unwrap();
 
@@ -661,7 +661,7 @@ async fn pruned_fragments_children_are_reparented() {
 
     // Run consolidation — middle should be pruned
     let config = default_consolidation_config();
-    consolidation::run_consolidation(&db, None, &config)
+    consolidation::run_consolidation(&db, None, None, &config)
         .await
         .unwrap();
 
@@ -693,7 +693,7 @@ async fn associative_edges_decay_over_multiple_consolidation_cycles() {
     // Run consolidation 10 times
     let config = default_consolidation_config();
     for _ in 0..10 {
-        consolidation::run_consolidation(&db, None, &config)
+        consolidation::run_consolidation(&db, None, None, &config)
             .await
             .unwrap();
     }
@@ -733,7 +733,7 @@ async fn weak_associative_edges_get_pruned() {
     let config = default_consolidation_config();
     let mut total_pruned = 0;
     for _ in 0..10 {
-        let stats = consolidation::run_consolidation(&db, None, &config)
+        let stats = consolidation::run_consolidation(&db, None, None, &config)
             .await
             .unwrap();
         total_pruned += stats.edges_pruned;
@@ -765,7 +765,7 @@ async fn hierarchical_edges_are_immune_to_decay() {
     // Run consolidation 20 times
     let config = default_consolidation_config();
     for _ in 0..20 {
-        consolidation::run_consolidation(&db, None, &config)
+        consolidation::run_consolidation(&db, None, None, &config)
             .await
             .unwrap();
     }
@@ -854,7 +854,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     db.storage().recompute_all_relevance(t90).unwrap();
 
     let config = default_consolidation_config();
-    let stats = consolidation::run_consolidation(&db, None, &config)
+    let stats = consolidation::run_consolidation(&db, None, None, &config)
         .await
         .unwrap();
 
@@ -906,7 +906,7 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
     let t30 = now + 30 * day;
     db.storage().recompute_all_relevance(t30).unwrap();
     let config = default_consolidation_config();
-    consolidation::run_consolidation(&db, None, &config)
+    consolidation::run_consolidation(&db, None, None, &config)
         .await
         .unwrap();
 

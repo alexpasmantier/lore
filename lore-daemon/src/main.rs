@@ -224,9 +224,13 @@ async fn run_local_loop(
     config: &Config,
     shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = ClaudeClient::auto(
+    let extraction_client = ClaudeClient::auto(
         &config.claude.api_key_env,
-        config.ingestion.claude_model.clone(),
+        config.claude.extraction_model.clone(),
+    );
+    let compression_client = ClaudeClient::auto(
+        &config.claude.api_key_env,
+        config.claude.compression_model.clone(),
     );
 
     let ingestion_interval = Duration::from_secs(config.ingestion.poll_interval_secs);
@@ -258,7 +262,8 @@ async fn run_local_loop(
                 status::write_status(DaemonState::Consolidating);
                 if let Err(e) = consolidation::run_consolidation(
                     db,
-                    Some(&client),
+                    Some(&extraction_client),
+                    Some(&compression_client),
                     &consolidation_config,
                 ).await {
                     tracing::error!("Consolidation error: {}", e);
@@ -440,14 +445,24 @@ async fn run_single_consolidation(config: Config) -> Result<(), Box<dyn std::err
     let storage = Storage::open(&config.db_path())?;
     let db = LoreDb::new(storage);
 
-    let client = ClaudeClient::auto(
+    let extraction_client = ClaudeClient::auto(
         &config.claude.api_key_env,
-        config.ingestion.claude_model.clone(),
+        config.claude.extraction_model.clone(),
+    );
+    let compression_client = ClaudeClient::auto(
+        &config.claude.api_key_env,
+        config.claude.compression_model.clone(),
     );
 
     let daemon_pid = running_daemon_pid();
     status::write_status(status::DaemonState::Consolidating);
-    let result = consolidation::run_consolidation(&db, Some(&client), &config.consolidation).await;
+    let result = consolidation::run_consolidation(
+        &db,
+        Some(&extraction_client),
+        Some(&compression_client),
+        &config.consolidation,
+    )
+    .await;
     match daemon_pid {
         Some(pid) => status::write_status_for_pid(status::DaemonState::Idle, pid),
         None => status::clear_status(),
