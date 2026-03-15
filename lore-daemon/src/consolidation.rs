@@ -114,8 +114,12 @@ async fn phase0_digest_staged(
     }
 
     // Prepare all sessions for parallel extraction
-    let mut tasks: Vec<(String, Vec<ConversationTurn>, ingestion::SessionContext, String)> =
-        Vec::new();
+    let mut tasks: Vec<(
+        String,
+        Vec<ConversationTurn>,
+        ingestion::SessionContext,
+        String,
+    )> = Vec::new();
 
     for session in sessions.iter().take(MAX_SESSIONS_PER_CONSOLIDATION) {
         let staged_turns = db.storage().get_staged_turns(&session.file_path)?;
@@ -149,14 +153,14 @@ async fn phase0_digest_staged(
 
     // Extract knowledge from all sessions concurrently
     use futures::stream::{self, StreamExt};
-    const EXTRACTION_CONCURRENCY: usize = 4;
+    const EXTRACTION_CONCURRENCY: usize = 16;
 
-    let results: Vec<_> = stream::iter(tasks.iter().map(|(file_path, turns, ctx, session_id)| {
-        async move {
+    let results: Vec<_> = stream::iter(tasks.iter().map(
+        |(file_path, turns, ctx, session_id)| async move {
             let result = ingestion::extract_knowledge_trees(client, turns, Some(ctx)).await;
             (file_path.as_str(), session_id.as_str(), result)
-        }
-    }))
+        },
+    ))
     .buffer_unordered(EXTRACTION_CONCURRENCY)
     .collect()
     .await;
