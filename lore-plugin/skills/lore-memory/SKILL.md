@@ -20,11 +20,13 @@ Memory is dynamic — it behaves more like biological memory than a static datab
 - **Accessing memories reinforces them**: When you read a memory, it gets reinforced — its decay timer resets and connected memories get a small activation boost.
 - **Importance matters**: High-importance memories (architectural decisions, user corrections) decay much slower and maintain a minimum relevance floor.
 - **Results are ranked by relevance**: Search results blend semantic similarity (70%) with temporal relevance (30%).
+- **Novel knowledge persists longer**: Surprising information that doesn't match existing knowledge is encoded with higher importance, making it decay slower.
+- **Deep search finds hidden connections**: `search(deep: true)` traverses the knowledge graph to find fragments connected by associative edges, even if they don't match the query directly.
 
 ## Available Tools
 
 ### `search`
-Semantic search across memory. Returns **IDs and scores only** — no content. Use `read` to get content of specific results. Pass `parent_id` to restrict search to descendants of a fragment.
+Semantic search across memory. Returns **IDs and scores only** — no content. Use `read` to get content of specific results. Pass `parent_id` to restrict search to descendants of a fragment. Set `deep: true` to run graph traversal (Personalized PageRank) that discovers non-obvious connections across associative edges — useful when direct semantic search misses related knowledge.
 
 ### `read`
 Read the full content of a fragment, plus its structural connections (parent ID, children IDs, association IDs) for navigation.

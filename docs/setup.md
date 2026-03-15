@@ -10,7 +10,7 @@ All components run locally. The daemon ingests conversations, digests them, and 
 just install
 ```
 
-This installs `lore`, `lore-mcp`, and `lore-tray` to `~/.local/bin/`.
+This installs `lore`, `lore-mcp`, `lore-tray`, `lore-server`, and `lore-explorer` to `~/.local/bin/`.
 
 On macOS, you can also build the desktop app:
 
@@ -130,3 +130,31 @@ To manually trigger a sync:
 ```sh
 lore sync http://server:8080
 ```
+
+---
+
+## Docker deployment
+
+The central server can also be deployed via Docker:
+
+```sh
+just docker-build
+docker run -d \
+  --name lore \
+  -p 8080:8080 \
+  -v lore-data:/data \
+  -e ANTHROPIC_API_KEY=sk-... \
+  lore-server
+```
+
+The container runs both `lore-server` (MCP over HTTP) and the consolidation daemon. Configuration is via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | — | Required for consolidation. Server runs without it but won't digest. |
+| `LORE_CONSOLIDATION_INTERVAL` | `7200` | Seconds between consolidation cycles |
+| `LORE_IDLE_THRESHOLD` | `300` | Seconds before a session is eligible for digestion |
+| `LORE_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | Model for knowledge extraction |
+| `LORE_COMPRESSION_MODEL` | `claude-haiku-4-5-20251001` | Model for recursive summarization |
+
+Data is persisted at `/data/memory.db` inside the container.
