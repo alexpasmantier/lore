@@ -583,6 +583,18 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
+/// Clean content for single-line display: collapse whitespace, strip markdown.
+fn preview(s: &str, max: usize) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    // Strip leading markdown headers
+    let cleaned = cleaned.trim_start_matches(|c: char| c == '#' || c == ' ' || c == '*');
+    let cleaned = cleaned.replace("**", "");
+    truncate(cleaned.trim(), max).to_string()
+}
+
 fn cli_roots(
     config: Config,
     limit: usize,
@@ -601,7 +613,7 @@ fn cli_roots(
     println!("{}", "-".repeat(100));
     for t in &roots {
         let children = db.children(t.id).len();
-        let content_preview = truncate(&t.content, 60);
+        let content_preview = preview(&t.content, 60);
         println!(
             "{:<38} {:.2}  {:>4}  {} {}",
             t.id,
