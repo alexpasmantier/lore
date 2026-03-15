@@ -92,7 +92,27 @@ fn extract_text_content(content: &Value) -> String {
                                 }
                             }
                         }
-                        // Skip tool_use, tool_result, image blocks, etc.
+                        "tool_result" => {
+                            // Include concise tool results — they carry project context
+                            // (file contents, command outputs, agent summaries)
+                            let result_text = match obj.get("content") {
+                                Some(Value::String(s)) => Some(s.as_str()),
+                                Some(Value::Array(arr)) => arr.iter().find_map(|item| {
+                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        item.get("text").and_then(|t| t.as_str())
+                                    } else {
+                                        None
+                                    }
+                                }),
+                                _ => None,
+                            };
+                            if let Some(text) = result_text {
+                                if text.len() > 50 {
+                                    texts.push(format!("[Context: {}]", truncate(text, 2000)));
+                                }
+                            }
+                        }
+                        // Skip tool_use, image blocks, etc.
                         _ => {}
                     }
                 }
