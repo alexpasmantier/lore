@@ -77,6 +77,9 @@ struct SearchHit {
     id: String,
     score: f32,
     depth: u32,
+    /// Ancestor content from root down to (but not including) this fragment.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    breadcrumb: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +189,7 @@ impl MemoryServer {
                                 id: c.id.to_string(),
                                 score: c.relevance_score,
                                 depth: c.depth,
+                                breadcrumb: Vec::new(),
                             })
                             .collect();
                         return serde_json::to_string_pretty(&hits)
@@ -214,17 +218,19 @@ impl MemoryServer {
                         id: f.id.to_string(),
                         score: *score,
                         depth: f.depth,
+                        breadcrumb: Vec::new(),
                     })
                     .collect::<Vec<_>>()
             } else {
                 // Global search
-                let scored = db.query(&params.query, 0, params.limit);
+                let scored = db.query(&params.query, params.limit);
                 scored
                     .iter()
                     .map(|sf| SearchHit {
                         id: sf.fragment.id.to_string(),
                         score: sf.score,
                         depth: sf.fragment.depth,
+                        breadcrumb: sf.breadcrumb.clone(),
                     })
                     .collect::<Vec<_>>()
             };

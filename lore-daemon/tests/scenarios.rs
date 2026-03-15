@@ -463,7 +463,7 @@ fn query_reinforces_and_spreads_activation() {
         .relevance_score;
 
     // Query for "rust error" — this should match and reinforce the topic
-    let results = db.query("rust error handling", 0, 10);
+    let results = db.query("rust error handling", 10);
     assert!(!results.is_empty(), "Should find rust error handling topic");
 
     // The topic itself should be reinforced (access_count increased)
@@ -517,7 +517,7 @@ fn associative_links_propagate_activation() {
         .relevance_score;
 
     // Query for "rust error" — triggers reconsolidation on rust_topic
-    let _ = db.query("rust error", 0, 5);
+    let _ = db.query("rust error", 5);
 
     // RefCell topic should get a boost via the associative edge
     let refcell_after = db
@@ -819,7 +819,7 @@ async fn full_lifecycle_ingest_age_consolidate_query_repeat() {
     }
 
     // ── Day 30: Query "rust" — this reinforces matching memories ──
-    let results = db.query("rust error", 0, 10);
+    let results = db.query("rust error", 10);
     assert!(!results.is_empty());
 
     // (The query above reinforced the Rust topic — its decay timer resets to now)
@@ -900,7 +900,7 @@ async fn knowledge_from_different_sessions_builds_unified_graph() {
         .unwrap();
 
     // Query one topic — should trigger spreading activation to the other
-    let _ = db.query("error handling", 0, 5);
+    let _ = db.query("error handling", 5);
 
     // Age by 30 days and consolidate
     let t30 = now + 30 * day;

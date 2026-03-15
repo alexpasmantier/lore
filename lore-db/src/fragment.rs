@@ -99,6 +99,8 @@ impl Fragment {
 pub struct ScoredFragment {
     pub fragment: Fragment,
     pub score: f32,
+    /// Ancestor content from root down to (but not including) this fragment.
+    pub breadcrumb: Vec<String>,
 }
 
 /// A tree node containing a fragment and its children.

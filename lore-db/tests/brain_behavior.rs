@@ -666,7 +666,7 @@ fn query_reinforces_returned_fragments() {
     let original_access = frag.access_count;
 
     // Query with text fallback (since we have no embedder)
-    let results = db.query("rust", 0, 10);
+    let results = db.query("rust", 10);
     assert!(!results.is_empty());
 
     // The fragment in the DB should have been touched

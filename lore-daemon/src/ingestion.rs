@@ -179,9 +179,10 @@ async fn compress_to_tree(
 
         let ctx = session_context_prefix(session);
         let prompt = format!(
-            "{ctx}Summarize the following into approximately {target_len} characters. \
-             Preserve key insights, decisions, and technical details. \
-             Write a self-contained summary readable on its own. \
+            "{ctx}Rewrite the following at a higher level of abstraction in approximately \
+             {target_len} characters. Describe the concept or principle, not the specific \
+             implementation details. Write a self-contained summary readable on its own. \
+             Do not use markdown formatting. \
              Respond with ONLY the summary, no preamble.\n\n{current}"
         );
 

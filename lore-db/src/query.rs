@@ -43,47 +43,67 @@ impl LoreDb {
         self.embedder.as_ref()
     }
 
-    /// Search by topic string, return fragments at specified depth.
-    /// Uses a blended score of semantic similarity and relevance.
+    /// Search by topic string across all depths.
+    /// Returns the best match per tree (deduplicated) with breadcrumbs.
     /// Accessing fragments reinforces them (reconsolidation on recall).
-    pub fn query(&self, topic: &str, depth: u32, limit: usize) -> Vec<ScoredFragment> {
+    pub fn query(&self, topic: &str, limit: usize) -> Vec<ScoredFragment> {
         let query_embedding = match self.embed_text(topic) {
             Some(e) => e,
-            None => return self.query_text_fallback(topic, depth, limit),
+            None => return self.query_text_fallback(topic, limit),
         };
 
-        // Get all fragments at the target depth with embeddings
-        let fragments = match self.storage.get_fragments_with_embeddings(Some(depth)) {
+        // Get ALL fragments with embeddings (no depth filter)
+        let fragments = match self.storage.get_fragments_with_embeddings(None) {
             Ok(f) => f,
             Err(_) => return Vec::new(),
         };
 
         // Score by blended semantic similarity + relevance
-        let mut scored: Vec<ScoredFragment> = fragments
+        let mut scored: Vec<(Fragment, f32)> = fragments
             .into_iter()
             .filter(|f| !f.embedding.is_empty() && f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .map(|f| {
                 let semantic = cosine_similarity(&query_embedding, &f.embedding);
                 let score =
                     SEMANTIC_WEIGHT * semantic + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
-                ScoredFragment { fragment: f, score }
+                (f, score)
             })
             .collect();
 
-        // Sort by score descending
         scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        scored.truncate(limit);
 
-        // Reinforce accessed fragments (reconsolidation on recall)
-        for sf in &scored {
+        // Dedup by tree: keep only the best-scoring fragment per root
+        let mut seen_roots = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+
+        for (frag, score) in scored {
+            let root_id = self.find_root(frag.id);
+            if seen_roots.contains(&root_id) {
+                continue;
+            }
+            seen_roots.insert(root_id);
+
+            let breadcrumb = self.build_breadcrumb(frag.id);
+            deduped.push(ScoredFragment {
+                fragment: frag,
+                score,
+                breadcrumb,
+            });
+
+            if deduped.len() >= limit {
+                break;
+            }
+        }
+
+        // Reinforce accessed fragments
+        for sf in &deduped {
             self.reinforce_on_access(sf.fragment.id);
         }
 
-        scored
+        deduped
     }
 
     /// Get children of a specific node (walk down the tree).
@@ -105,7 +125,7 @@ impl LoreDb {
     /// Explore a topic: find the best matching L0 root nodes, return their subtrees.
     pub fn explore(&self, topic: &str, max_depth: u32, limit: usize) -> Vec<Tree> {
         // Find matching L0 roots
-        let top_roots = self.query(topic, 0, limit);
+        let top_roots = self.query(topic, limit);
 
         top_roots
             .into_iter()
@@ -127,7 +147,11 @@ impl LoreDb {
                 let semantic = cosine_similarity(embedding, &f.embedding);
                 let score =
                     SEMANTIC_WEIGHT * semantic + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
-                ScoredFragment { fragment: f, score }
+                ScoredFragment {
+                    fragment: f,
+                    score,
+                    breadcrumb: Vec::new(),
+                }
             })
             .collect();
 
@@ -340,26 +364,59 @@ impl LoreDb {
         Tree { fragment, children }
     }
 
+    /// Walk up the tree to find the root fragment ID.
+    fn find_root(&self, id: FragmentId) -> FragmentId {
+        let mut current = id;
+        for _ in 0..20 {
+            // safety limit
+            match self.parent(current) {
+                Some(p) => current = p.id,
+                None => break,
+            }
+        }
+        current
+    }
+
+    /// Build breadcrumb: collect ancestor content from root down to (but not including) this fragment.
+    fn build_breadcrumb(&self, id: FragmentId) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut current = id;
+        for _ in 0..20 {
+            match self.parent(current) {
+                Some(p) => {
+                    ancestors.push(p.content.clone());
+                    current = p.id;
+                }
+                None => break,
+            }
+        }
+        ancestors.reverse();
+        ancestors
+    }
+
     /// Text-based fallback query when embeddings are not available.
-    fn query_text_fallback(&self, topic: &str, depth: u32, limit: usize) -> Vec<ScoredFragment> {
-        let fragments = self
-            .storage
-            .get_fragments_at_depth(depth)
-            .unwrap_or_default();
+    fn query_text_fallback(&self, topic: &str, limit: usize) -> Vec<ScoredFragment> {
+        // Search all depths
+        let mut all_fragments = Vec::new();
+        for depth in 0..10 {
+            let frags = self.storage.get_fragments_at_depth(depth).unwrap_or_default();
+            if frags.is_empty() {
+                break;
+            }
+            all_fragments.extend(frags);
+        }
 
         let topic_lower = topic.to_lowercase();
 
-        let mut scored: Vec<ScoredFragment> = fragments
+        let mut scored: Vec<(Fragment, f32)> = all_fragments
             .into_iter()
             .filter(|f| f.relevance_score > MIN_RELEVANCE_THRESHOLD)
             .filter_map(|f| {
                 let content_lower = f.content.to_lowercase();
 
-                // Simple text matching score, blended with relevance
                 let text_score = if content_lower.contains(&topic_lower) {
                     0.8
                 } else {
-                    // Check for individual word matches
                     let words: Vec<&str> = topic_lower.split_whitespace().collect();
                     let matches = words.iter().filter(|w| content_lower.contains(*w)).count();
                     if matches > 0 {
@@ -371,23 +428,43 @@ impl LoreDb {
 
                 let score =
                     SEMANTIC_WEIGHT * text_score + (1.0 - SEMANTIC_WEIGHT) * f.relevance_score;
-                Some(ScoredFragment { fragment: f, score })
+                Some((f, score))
             })
             .collect();
 
         scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        scored.truncate(limit);
 
-        // Reinforce accessed fragments (reconsolidation on recall)
-        for sf in &scored {
+        // Dedup by tree
+        let mut seen_roots = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+
+        for (frag, score) in scored {
+            let root_id = self.find_root(frag.id);
+            if seen_roots.contains(&root_id) {
+                continue;
+            }
+            seen_roots.insert(root_id);
+
+            let breadcrumb = self.build_breadcrumb(frag.id);
+            deduped.push(ScoredFragment {
+                fragment: frag,
+                score,
+                breadcrumb,
+            });
+
+            if deduped.len() >= limit {
+                break;
+            }
+        }
+
+        for sf in &deduped {
             self.reinforce_on_access(sf.fragment.id);
         }
 
-        scored
+        deduped
     }
 }
 
@@ -482,7 +559,7 @@ mod tests {
     #[test]
     fn test_text_fallback_query() {
         let db = make_test_db();
-        let results = db.query("rust", 0, 10);
+        let results = db.query("rust", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].fragment.content, "Rust programming language");
     }

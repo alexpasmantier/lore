@@ -64,9 +64,6 @@ enum Command {
     Query {
         /// Search text
         topic: String,
-        /// Depth level to search (0=roots, 1=concepts, etc.)
-        #[arg(short, long, default_value = "0")]
-        depth: u32,
         /// Max results
         #[arg(short, long, default_value = "10")]
         limit: usize,
@@ -170,11 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Start { .. } => run_foreground(config).await?,
                 Command::Ingest => run_single_ingest(config).await?,
                 Command::Consolidate => run_single_consolidation(config).await?,
-                Command::Query {
-                    topic,
-                    depth,
-                    limit,
-                } => cli_query(config, &topic, depth, limit)?,
+                Command::Query { topic, limit } => cli_query(config, &topic, limit)?,
                 Command::Sync { remote, client_id } => {
                     cli_sync(config, &remote, client_id.as_deref()).await?
                 }
@@ -635,31 +628,35 @@ fn cli_roots(
 fn cli_query(
     config: Config,
     topic: &str,
-    depth: u32,
     limit: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db = open_db(&config)?;
-    let results = db.query(topic, depth, limit);
+    let results = db.query(topic, limit);
 
     if results.is_empty() {
-        println!("No results for \"{}\" at depth {}.", topic, depth);
+        println!("No results for \"{}\".", topic);
         return Ok(());
     }
 
     for (i, sf) in results.iter().enumerate() {
         let f = &sf.fragment;
+        let short_id = &f.id.to_string()[..8];
         println!(
-            "{}. [score={:.3} rel={:.3}] (depth={}) {}",
+            "{}. [score={:.3}] (d{}) {}",
             i + 1,
             sf.score,
-            f.relevance_score,
             f.depth,
-            f.id
+            short_id
         );
-        println!("   {}", f.content);
-        if let Some(parent) = db.parent(f.id) {
-            println!("   <- parent: {}", truncate(&parent.content, 60));
+        if !sf.breadcrumb.is_empty() {
+            let crumbs: Vec<String> = sf
+                .breadcrumb
+                .iter()
+                .map(|c| preview(c, 40))
+                .collect();
+            println!("   {} >", crumbs.join(" > "));
         }
+        println!("   {}", preview(&f.content, 80));
         println!();
     }
     Ok(())

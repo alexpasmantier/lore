@@ -72,7 +72,7 @@ impl ExplorerApp {
                             .collect()
                     } else {
                         // Semantic search on roots
-                        let scored = db.query(&req.query, 0, TOP_N);
+                        let scored = db.query(&req.query, TOP_N);
                         scored
                             .iter()
                             .map(|sf| ResultEntry {
