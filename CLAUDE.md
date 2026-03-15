@@ -2,7 +2,7 @@
 
 ## Build & Test
 - Build all: `cargo build`
-- Test all: `cargo test` (113 tests across workspace)
+- Test all: `cargo test` (121 tests across workspace)
 - Test single crate: `cargo test -p lore-db`
 - Run MCP server: `cargo run -p lore-mcp`
 - Run CLI/daemon: `cargo run -p lore-daemon -- <command>` (binary is `lore`)
@@ -11,8 +11,8 @@
 
 ## Architecture
 - **lore-db**: Core library. Stores knowledge as interconnected abstraction trees in SQLite with fastembed embeddings (all-MiniLM-L6-v2, 384-dim). Exports `lore_home()` for cross-platform `~/.lore/` path resolution.
-- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 6 tools: `search`, `read`, `list_roots`, `store`, `update`, `delete`. Iterative search→read workflow — search returns IDs/scores only, read returns content + structural IDs.
-- **lore-daemon**: CLI + background daemon (binary name: `lore`). Two-phase pipeline: ingestion stages raw conversation turns into SQLite (fast, no API calls); consolidation digests idle sessions with full conversation context via Claude API, then runs 7 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Session metadata (cwd, git branch) extracted from JSONL and passed to extraction prompt.
+- **lore-mcp**: MCP server (stdio JSON-RPC via `rmcp` crate). Exposes 6 tools: `search`, `read`, `list_roots`, `store`, `update`, `delete`. Iterative search→read workflow — search returns IDs/scores only, read returns content + structural IDs. `search(deep: true)` runs Personalized PageRank for multi-hop discovery.
+- **lore-daemon**: CLI + background daemon (binary name: `lore`). Two-phase pipeline: ingestion stages raw conversation turns into SQLite (fast, no API calls); consolidation digests idle sessions with full conversation context via Claude API, then runs 9 maintenance phases. Falls back to `claude -p` if no ANTHROPIC_API_KEY is set. Session metadata (cwd, git branch) extracted from JSONL and passed to extraction prompt.
 - **lore-tray**: Desktop app (system tray icon). Auto-starts daemon on launch, stops on quit. Monitors `~/.lore/daemon.status`. Packaged as macOS `.app` or Linux `.desktop`. Requires GTK3 + libappindicator on Linux.
 - **lore-server**: HTTP server for centralized deployments. MCP over SSE (`/mcp`), push endpoint (`/push`), status (`/status`). Reuses `MemoryServer` from lore-mcp via Axum + rmcp streamable HTTP transport.
 - **lore-explorer**: Desktop knowledge browser (egui). Interactive search→refine→drill workflow with breadcrumb navigation.
@@ -32,10 +32,15 @@
 - **Interconnected abstraction trees**: Fragments form trees where depth 0 = broad concepts and deeper = closer to original conversation specifics. All fragments are the same type, differing only in abstraction level and content. Associative edges link related fragments across different trees.
 - **Relevance scoring**: Ebbinghaus forgetting curve with reinforcement. `R = importance * strength * exp(-decay_rate * days) + importance * 0.3`. Strength grows logarithmically with access count.
 - **Reconsolidation on recall**: Reading a fragment reinforces it (resets decay timer) and spreads activation to neighbors.
-- **Importance weighting**: Fragments are scored high/medium/low at extraction. Importance controls decay rate (high=slow, low=fast) and relevance floor.
+- **Prediction-error encoding**: Novel content (low similarity to existing roots) gets boosted importance via `multiplier = 1 + 0.5 * (1 - max_root_similarity)`. Routine restatements keep base importance. Transparent when embedder unavailable.
+- **Schema-based dual routing**: During ingestion, new knowledge is routed based on similarity to existing roots. High fit (>0.75): attached as children of matching root (fast cortical assimilation). Moderate (0.35-0.75): new tree + associative link. Low (<0.35): standalone root (hippocampal encoding).
+- **Importance weighting**: Fragments are scored high/medium/low at extraction, modulated by prediction error. Importance controls decay rate (high=slow, low=fast) and relevance floor.
 - **Blended query ranking**: `score = 0.7 * semantic_similarity + 0.3 * relevance_score`. Stale fragments rank lower.
+- **Deep search (PPR)**: `search(deep: true)` runs Personalized PageRank from top semantic matches across associative edges to surface non-obvious connections. 3 iterations, α=0.3 teleport probability.
 - **Forgetting**: Fragments below relevance threshold (0.05) are invisible to queries. During consolidation, truly forgotten fragments (relevance < 0.02, age > 60d, never accessed) are pruned.
 - **Root merging**: Roots above `merge_threshold` (default 0.85) are merged during consolidation. The survivor is the more-accessed root; the victim's children are reparented.
+- **Reflection fragments**: Consolidation identifies roots with 3+ associative connections (dense clusters) and generates higher-order synthesis insights via Claude. Stored as type=reflection with derived_from edges. Limited to 1 per cycle.
+- **Event boundary detection**: Long sessions are split at topic boundaries (Jaccard word-overlap below 0.15) before extraction, so each segment gets focused knowledge extraction.
 - **Contradiction resolution**: Sibling pairs are batch-checked (up to 10 per API call) for contradictions. The older fragment is superseded.
 - **Edge decay**: Associative edge weights decay 5% per consolidation cycle. Edges below 0.15 are pruned.
 - **Temporal edges**: Sequential siblings in extracted knowledge are linked with temporal edges.
@@ -50,7 +55,7 @@
 - Daemon uses `claude -p` CLI fallback when no API key is available (removes CLAUDECODE env var to avoid nesting error).
 - Subagent JSONL files (`subagents/` dirs) and symlinks are skipped during ingestion.
 - Cross-platform paths via `dirs` crate. Shared `lore_home()` helper in `lore-db`. Never use raw `$HOME`.
-- Ingestion stages raw turns into `staged_turns` table (no Claude calls). Consolidation Phase 0 digests idle sessions (default 5 min threshold) with full conversation context. Large conversations are chunked at `max_turns_per_extraction` (default 200).
+- Ingestion stages raw turns into `staged_turns` table (no Claude calls). Consolidation Phase 0 digests idle sessions (default 5 min threshold) with full conversation context. Long sessions are split at topic boundaries before extraction. Large conversations are also chunked at `max_turns_per_extraction` (default 200).
 - Session metadata (cwd, git branch) is read from JSONL files and included in the extraction prompt for project/branch awareness.
 - Extraction prompt includes existing root content (200 char preview) and children content to reduce duplicate root creation.
 - CLI commands that don't need async (status, stop, logs, roots, staged, explore) skip tokio runtime initialization for instant startup.
