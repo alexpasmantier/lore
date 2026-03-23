@@ -15,6 +15,8 @@ cp -r target/Lore.app ~/Applications/
 
 Launch **Lore** from Spotlight. It runs as a menu bar icon, auto-managing the background daemon.
 
+> **Note:** This does not install the Lore CLI (see [CLI only](#cli-only) below).
+
 ### Linux
 
 ```sh
